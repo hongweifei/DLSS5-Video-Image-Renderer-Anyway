@@ -101,7 +101,7 @@ DLSS5NR_vX.Y/
   runtime/webgpu/{onnxruntime_providers_webgpu,dxcompiler,dxil}.dll
   models/                         # NGX 模型 + 转发器（fp16/fp8）
   models/onnx/                    # ONNX 重建模型（.onnx 权重）
-  web/                            # 界面：index.html + css/ + js/ + server.js（必须整目录打包）
+  web/                            # 界面：index.html + css/ + js/ + server.js + server/（必须整目录打包）
   tools/{node,ffmpeg,ffprobe}.exe # 便携运行时
   server_guard.exe                # 可选：关窗自动清理临时缓存
   Start_DLSS5NR.bat               # 双击启动（= start_ui.bat）
@@ -116,8 +116,9 @@ DLSS5NR_vX.Y/
    `cl src\guard\server_guard.c /O1 /MT /W3 /nologo /Fe:server_guard.exe` 亦可；
 4. **不要**把 `src/`、`build/`、`outputs/`、`.tmp_uploads/`、`.frame_previews/`、`*.log`
    打进包——发行包不需要源码与构建产物；
-5. `web/` 必须**整目录**打包（`index.html` + `css/` + `js/` + `server.js`）；
-   前端改动后可先跑校验：`node tools/verify-web.js .` 与 `node tools/verify-static.js .`；
+5. `web/` 必须**整目录**打包（`index.html` + `css/` + `js/` + `server.js` + `server/`）；
+   改动后先跑校验：`node tools/verify-web.js .`、`node tools/verify-static.js .`、
+   `node tools/verify-server.js`（漏掉 `server/` 服务会直接启动失败）；
 6. 解压到**含中文或空格的路径**下试运行一次，确认启动与渲染正常。
 
 `.gitignore` 已把 `build/`、`models/`、`runtime/`、`tools/`、`outputs/`、`example/` 排除，
@@ -174,11 +175,36 @@ web/                        浏览器界面 + 本地服务（node，无第三方
   js/app-video-batch.js     视频批量渲染与显卡列表加载
   js/app-params.js          参数持久化、渲染参数恢复、撤销/重做、命名预设
   js/app-shortcuts.js       键盘快捷键（Ctrl+Enter 开始 / Esc 停止）
-  server.js                 本地服务：API、ffmpeg 与引擎子进程、静态资源
-tools/                      便携 node/ffmpeg/ffprobe + 前端校验脚本
-  verify-web.js             校验：JS 语法、全局作用域无重复声明、JS 引用的 id 都存在
-  verify-static.js          校验：静态资源路径与 MIME（复现 server.js 的解析逻辑）
+  server.js                 本地服务入口：端口选择/绑定、空闲清理（约 120 行）
+  server/                   服务端模块（CommonJS，无第三方依赖、无构建步骤）
+    paths.js                全部磁盘位置解析（WEB_DIR/ROOT/models/outputs/临时目录）+ 输出路径
+    state.js                渲染队列的共享可变状态（当前任务/队列/lastDone/uiLastPoll）
+    http.js                 JSON 响应、请求体解析、两个 MIME 映射
+    tempfiles.js            可丢弃的上传与帧缓存目录：分类、清扫、按类型清理
+    engine.js               引擎定位、模型配对、任务配置 -> argv、单次运行与看门狗
+    media.js                ffmpeg/ffprobe 封装（探测、时长、尺寸、转码）
+    export.js               成品转码导出（编码器预设 + 进度状态）
+    meta.js                 渲染参数内嵌/读取（mp4 comment / PNG tEXt / JPG COM）
+    dialog.js               Windows 原生文件对话框 + 打开浏览器
+    jobs.js                 渲染队列状态机：入队/多趟/进度/取消/让位
+    batch.js                图片批量渲染 + 文件夹遍历 + 单帧渲染原语
+    routes/index.js         路由表（"METHOD path" -> handler）+ 静态资源兜底
+    routes/status.js        /api/status、/api/info
+    routes/job.js           队列控制：start / queue-* / cancel / exit / video-batch
+    routes/picker.js        原生对话框路由（选文件/选文件夹/保存）
+    routes/render.js        单帧与单图渲染、frame-img、read-meta
+    routes/media.js         字节流与探测：video / download / image / gpus / probe
+    routes/batch.js         /api/image-batch*
+    routes/export.js        /api/export 与 /api/upload
+    routes/static.js        静态资源兜底 + 目录穿越守卫（用 WEB_DIR，不是 __dirname）
+tools/                      便携 node/ffmpeg/ffprobe + 校验脚本（本目录不入库，见 .gitignore）
+  verify-web.js             校验：前端 JS 语法、全局作用域无重复声明、JS 引用的 id 都存在
+  verify-static.js          校验：静态资源路径与 MIME（复现 routes/static.js 的解析逻辑）
   audit-css-tokens.js       校验：所有 var(--x) 都有定义
+  verify-server.js          校验：服务端语法、29 个路由、原声明清点、共享状态引用方式
+  server-probe.js           校验：真实 HTTP 打全部路由（`--render` 含真实 ONNX 推理）
+  server-queue-test.js      校验：队列端到端（排队/重排/取消让位/多趟/导出/批量）
+  make-test-media.js        生成上面两个脚本用的 320x240 测试素材
 start_ui.bat                启动脚本（双击运行）
 ```
 
