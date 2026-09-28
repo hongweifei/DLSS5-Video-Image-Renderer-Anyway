@@ -12,7 +12,12 @@ module.exports = [
     ['GET', '/api/status', async (req, res, url) => {
         state.uiLastPoll = Date.now();
         const j = state.current;
-        if (!j) return sendJson(res, 200, { running: false, lines: [], lineCount: 0, queue: queueInfo(), lastDone: state.lastDone });
+        if (!j) {
+            return sendJson(res, 200, {
+                running: false, lines: [], lineCount: 0, lineFrom: 0, lineSeq: 0,
+                queue: queueInfo(), lastDone: state.lastDone,
+            });
+        }
         let outputSize = null;
         if (j.output && fs.existsSync(j.output)) {
             try { outputSize = fs.statSync(j.output).size; } catch (e) {}
@@ -37,10 +42,15 @@ module.exports = [
         const etaSec = (!j.finished && avgFps > 0 && overallTotal > overallDone)
             ? Math.round((overallTotal - overallDone) / avgFps)
             : 0;
-        // Incremental log lines: client passes the count it already has via ?since= and we slice
-        // the fresh tail only (no re-transmission of every line on every poll).
+        // Incremental log lines. `since` is an ABSOLUTE line sequence number, not an index: the
+        // job's lines[] is capped at 300, so an index would silently stop matching after a wrap.
+        // lineFrom is the seq of lines[0]; anything the client asks for that falls outside the
+        // buffer (first poll of a NEW job, or a client that fell more than 300 lines behind) gets
+        // the whole buffer instead of an empty or wrong slice.
         const since = Math.max(0, parseInt(url.searchParams.get('since') || '0', 10));
-        const lineCount = j.lines.length;
+        const lineFrom = j.lineSeq - j.lines.length;
+        const inRange = since >= lineFrom && since <= j.lineSeq;
+        const lines = inRange ? j.lines.slice(since - lineFrom) : j.lines.slice();
         return sendJson(res, 200, {
             running: !j.finished,
             id: j.id,
@@ -66,8 +76,10 @@ module.exports = [
                 error: exporter.error,
             },
             outputSize,
-            lines: j.lines.slice(since),
-            lineCount,
+            lines,
+            lineCount: j.lines.length,
+            lineFrom,
+            lineSeq: j.lineSeq,
             queue: queueInfo(),
             lastDone: state.lastDone,
         });

@@ -65,7 +65,7 @@ function maybeRunNext() {
     if (!nx) return;
     state.current = nx;
     if (nx.steps.length > 1) {
-        nx.lines.push(`whole-video multi-pass: ${nx.steps.length} full renders in series (final = ${nx.output})`);
+        pushLine(nx, `whole-video multi-pass: ${nx.steps.length} full renders in series (final = ${nx.output})`);
     }
     runNextPass(nx);
 }
@@ -92,6 +92,7 @@ function startJob(cfg) {
         total: 0,
         framesPerPass: 0,        // frame count of one pass, learned from the first PROGRESS line
         lines: [],
+        lineSeq: 0,              // monotonic count of every line ever pushed (lines[] is capped)
         t0: 0,                   // wall-clock ms when the engine delivered its first PROGRESS line
         t1: 0,                   // wall-clock ms when the job finished (lazily set on first status)
         finished: false,
@@ -127,12 +128,12 @@ function jobFinish(job, cancelled) {
         at: Date.now(),
     };
     if (cancelled) {
-        job.lines.push('cancelled by user');
+        pushLine(job, 'cancelled by user');
         job.cancelled = true;
         job.finished = true;
         job.code = null;
     } else {
-        job.lines.push('DONE after ' + job.steps.length + ' pass(es): ' + job.output);
+        pushLine(job, 'DONE after ' + job.steps.length + ' pass(es): ' + job.output);
         job.finished = true;
         job.code = 0;
     }
@@ -145,7 +146,7 @@ function runNextPass(job) {
     const cfg = job.cfg;
     job.done = 0;
     job.total = 0;
-    job.lines.push(`=== pass ${job.passIndex + 1}/${job.steps.length} ===`);
+    pushLine(job, `=== pass ${job.passIndex + 1}/${job.steps.length} ===`);
 
     // Whole-video multi-pass: only the first pass (from the original file) honours the crop
     // window; later passes re-render the previous pass's complete output. Each pass is a fresh
@@ -153,7 +154,7 @@ function runNextPass(job) {
     const exe = findEngine();
     if (!fs.existsSync(exe)) {
         cleanupTemps(job);
-        job.lines.push('ERROR: engine not found: ' + exe);
+        pushLine(job, 'ERROR: engine not found: ' + exe);
         job.finished = true;
         job.code = -1;
         maybeRunNext();
@@ -165,7 +166,7 @@ function runNextPass(job) {
         args = engineArgs(cfg, step.input, step.output, step.window, step.output === job.master);
     } catch (e) {
         cleanupTemps(job);
-        job.lines.push('ERROR: ' + e.message);
+        pushLine(job, 'ERROR: ' + e.message);
         job.finished = true;
         job.code = -1;
         maybeRunNext();
@@ -193,7 +194,7 @@ function runNextPass(job) {
         job.child = null;
         if (!job.cancelled && !job.finished) {
             cleanupTemps(job);
-            job.lines.push('ERROR: engine failed to start: ' + e.message);
+            pushLine(job, 'ERROR: engine failed to start: ' + e.message);
             job.finished = true;
             job.code = -1;
             maybeRunNext();
@@ -220,7 +221,7 @@ function onPassDone(job, code) {
         }
     } else {
         cleanupTemps(job);
-        job.lines.push('ERROR: engine exit code ' + (code === null ? -1 : code) + ' (see log above)');
+        pushLine(job, 'ERROR: engine exit code ' + (code === null ? -1 : code) + ' (see log above)');
         job.finished = true;
         job.code = code === null ? -1 : code;
         maybeRunNext();
@@ -241,6 +242,19 @@ function cleanupTemps(job) {
     }
 }
 
+// Appends a log line and advances the job's monotonic line counter.
+//
+// `lineSeq` counts EVERY line this job ever produced, while `lines` is capped at 300. The
+// difference between them is the absolute sequence number of lines[0], which lets a client ask
+// for "everything after N" correctly even after the buffer has wrapped. Without it the client
+// used its own count as an index into the capped array, so a job longer than 300 log lines made
+// the panel freeze, and a NEW job silently lost its first N lines.
+function pushLine(job, text) {
+    job.lines.push(text);
+    job.lineSeq++;
+    if (job.lines.length > 300) job.lines.shift();
+}
+
 function handleLine(job, line) {
     if (!line) return;
 
@@ -254,8 +268,7 @@ function handleLine(job, line) {
         return;
     }
 
-    job.lines.push(line);
-    if (job.lines.length > 300) job.lines.shift();
+    pushLine(job, line);
 }
 
 module.exports = { startJob, jobFinish, queueInfo };
