@@ -1,0 +1,414 @@
+﻿/* ============================================================
+   app.css — 应用主样式（设计令牌 + 布局 + 组件）
+   分区：tokens / reset / layout / components / status / log / modal
+   ============================================================ */
+:root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --border: #e3e6ea;
+    --line: #e3e6ea;          /* 旧内联样式用的别名，见 components 中的 .divider */
+    --text: #1c1f23;
+    --muted: #6b7280;
+    --accent: #2f6fed;
+    --accent-soft: #eaf1ff;
+    --ok: #17914f;
+    --warn: #b7791f;
+    --danger: #c0392b;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    background: var(--card); border-bottom: 1px solid var(--border);
+    padding: 14px 22px; display: flex; align-items: baseline; gap: 12px;
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; }
+
+  .wrap { max-width: 1560px; margin: 0 auto; padding: 20px; display: grid;
+          grid-template-columns: 380px 1fr 560px; gap: 18px; align-items: start; }
+  @media (max-width: 1480px) { .wrap { grid-template-columns: 380px 1fr; }
+                                .col-img { grid-column: 1 / -1; } }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+          padding: 16px; margin-bottom: 16px; }
+  .card.drop-active { outline: 2px dashed var(--accent); outline-offset: 4px; background: var(--accent-soft); }
+  .card h2 { margin: 0 0 12px; font-size: 13px; font-weight: 600; color: var(--muted);
+             text-transform: uppercase; letter-spacing: .04em; }
+
+  label.field { display: block; margin-bottom: 12px; }
+  /* tighter vertical rhythm inside the merged render/export card */
+  #exportCard label.field { margin-bottom: 4px; }
+  #exportCard .field { margin-bottom: 2px; }
+  label.field > span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  label.field > span .warn-tag {
+    display: inline-block; margin-left: 8px; padding: 1px 8px;
+    font-size: 11px; font-weight: 500; letter-spacing: 0;
+    color: #A32D2D; background: rgba(226, 75, 74, 0.10);
+    border: 1px solid rgba(226, 75, 74, 0.30); border-radius: 10px;
+    vertical-align: middle; cursor: help; text-transform: none;
+  }
+  label.field > span .zh { display: block; font-size: 11px; opacity: .8; margin-top: 1px; }
+  .check-row label .zh { display: block; font-size: 11px; opacity: .8; }
+  input[type=text], input[type=number], select {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px;
+    background: #fff; color: var(--text); font-size: 13px; font-family: inherit;
+  }
+  input[type=text]:focus, input[type=number]:focus, select:focus {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+
+  .slider-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .slider-row .name { flex: 0 0 140px; font-size: 12px; color: var(--muted); }
+  .slider-row .name .zh { display: block; font-size: 11px; opacity: .8; }
+  .slider-row input[type=range] { flex: 1 1 auto; min-width: 60px; accent-color: var(--accent); }
+  .slider-row input[type=number].num {
+    flex: 0 0 72px; width: 72px; padding: 5px 7px; border: 1px solid var(--border);
+    border-radius: 6px; background: #fff; color: var(--text);
+    font: 12px var(--mono); text-align: right;
+  }
+  .slider-row input[type=number].num:focus {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .slider-row input[type=number].num:invalid { border-color: var(--danger); }
+
+  .check-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; }
+  .check-row input { accent-color: var(--accent); width: 15px; height: 15px; }
+  .check-row .hint { color: var(--muted); font-size: 11px; }
+
+  .btn {
+    padding: 8px 16px; border: 1px solid var(--border); border-radius: 6px; background: #fff;
+    color: var(--text); font-size: 13px; font-weight: 500; cursor: pointer; font-family: inherit;
+  }
+  .btn:hover { border-color: #c9ced6; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #2560d8; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.danger { color: var(--danger); }
+  .btn-row { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+  .preset-box { border: 1px dashed #ccd2da; border-radius: 8px; padding: 10px; margin-bottom: 14px;
+                background: rgba(120,130,145,.05); }
+  .preset-row { display: flex; gap: 6px; align-items: center; }
+  .preset-row + .preset-row { margin-top: 6px; }
+  .preset-row input[type=text] { flex: 1 1 auto; min-width: 0; }
+  .preset-row .btn { flex: 0 0 auto; padding: 7px 12px; }
+  .preset-list-wrap { position: relative; flex: 1 1 auto; min-width: 0; }
+  .preset-list-btn {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px;
+    background: #fff; color: var(--text); font: 13px inherit; text-align: left;
+    display: flex; justify-content: space-between; align-items: center; cursor: pointer;
+  }
+  .preset-list-btn:hover { border-color: #c9ced6; }
+  .preset-list-btn:focus { outline: none; border-color: var(--accent);
+                            box-shadow: 0 0 0 3px var(--accent-soft); }
+  .preset-list-btn .caret { color: var(--muted); font-size: 10px; }
+  .preset-list-menu {
+    display: none; position: absolute; top: calc(100% + 2px); left: 0; right: 0;
+    background: #fff; border: 1px solid var(--border); border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.10); max-height: 240px; overflow-y: auto;
+    padding: 4px 0; margin: 0; list-style: none; z-index: 200;
+  }
+  .preset-list-menu.open { display: block; }
+  .preset-list-menu .item { padding: 6px 10px; font-size: 13px; cursor: pointer; }
+  .preset-list-menu .item:hover, .preset-list-menu .item.active { background: var(--accent-soft); color: var(--accent); }
+  .preset-list-menu .item.empty { color: var(--muted); cursor: default; }
+  .preset-list-menu .item.empty:hover { background: transparent; color: var(--muted); }
+
+  .bar { height: 7px; background: #eceff3; border-radius: 4px; overflow: hidden; margin: 10px 0 6px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); width: 0;
+             transition: width .25s ease; }
+  .status { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+  .status.done { color: var(--ok); }
+  .status.err { color: var(--danger); }
+
+  pre.log {
+    background: #12151a; color: #d5dae2; border-radius: 8px; padding: 12px;
+    height: 320px; overflow: auto; font-family: var(--mono); font-size: 11.5px;
+    line-height: 1.55; margin: 0; white-space: pre-wrap; word-break: break-all;
+  }
+  .note {
+    background: #fff8e6; border: 1px solid #f0dca8; border-radius: 6px;
+    padding: 9px 11px; font-size: 12px; color: #7a5c14; margin-bottom: 12px;
+  }
+  .note.info { background: var(--accent-soft); border-color: #c3d7ff; color: #1a4aa8; }
+  .tag { display: inline-block; background: #eef0f3; color: var(--muted); border-radius: 4px;
+         padding: 1px 6px; font-size: 10.5px; margin-left: 6px; font-family: var(--mono); }
+  .meta { font-size: 12px; color: var(--muted); margin-top: 6px; font-family: var(--mono); }
+  .img-drop {
+    margin-top: 8px; padding: 28px 12px; text-align: center;
+    border: 1px dashed var(--border); border-radius: 8px; background: #fafbfd;
+    color: var(--muted); font-size: 12px; cursor: pointer; user-select: none;
+  }
+  .img-drop:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+  /* Full-screen image-compare modal: click 「放大对比」 to scrutinize render differences at near
+     full screen using the same mouse-drag split as the inline compare. */
+  .img-modal {
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0, 0, 0, .78);
+    display: none; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .img-modal.show { display: flex; }
+  .img-modal-inner { position: relative; width: 95vw; height: 88vh; max-width: 1800px; }
+  .img-modal .compare {
+    width: 100%; height: 100%;
+    min-width: 0; min-height: 0;
+    max-width: none; max-height: none;
+    cursor: ew-resize;
+  }
+  .img-modal .compare .img-stage {
+    width: 100%; height: 100%;
+  }
+  .img-modal .compare .img-stage > img.orig,
+  .img-modal .compare .img-stage .render-layer img {
+    width: 100%; height: 100%; object-fit: contain;
+    /* contain: whole picture visible with black letterbox when ratios differ (same approach as
+       the video compare). Both layers share the same box -> split stays pixel-aligned. MUST also
+       neutralise the base rules (max-width:100% / max-height:70vh) or the layers differ in size. */
+    max-width: none; max-height: none;
+  }
+
+  .img-modal-close {
+    position: absolute; top: -36px; right: 0;
+    color: #fff; background: rgba(0, 0, 0, .4); border: none;
+    font-size: 13px; font-family: inherit;
+    padding: 6px 14px; border-radius: 4px; cursor: pointer;
+  }
+  .img-modal-close:hover { background: rgba(0, 0, 0, .7); }
+  .img-modal-hint {
+    position: absolute; bottom: -30px; left: 0; right: 0; text-align: center;
+    color: rgba(255, 255, 255, .65); font-size: 11px; font-family: var(--mono);
+  }
+
+  .compare-labels {
+  position: absolute; top: 8px;
+  display: flex; justify-content: space-between;
+  width: 100%;
+  pointer-events: none;
+  padding: 0 10px;
+  font-size: 11px; font-family: var(--mono);
+}
+.compare-labels span {
+  background: rgba(0,0,0,.55); color: #fff; padding: 2px 8px; border-radius: 4px;
+}
+.compare {
+  position: relative;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: ew-resize;
+  user-select: none;
+  min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* .img-stage is the single shared canvas: its size is EXACTLY the scaled-down source image
+   (no letterbox). The rendered layer is drawn into that same rectangle and clipped relative to
+   it, so the divider coordinate maps 1:1 to image pixels -- no offset even when the compare box
+   is wider/taller than the picture. */
+.compare .img-stage {
+  position: relative;
+  max-width: 100%; max-height: 100%;
+  line-height: 0;
+}
+.compare .img-stage > img.orig {
+  display: block;
+  max-width: 100%;
+  max-height: 70vh;
+}
+.compare .img-stage .render-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  clip-path: inset(0 100% 0 0);   /* hidden until split updates */
+}
+.compare .img-stage .render-layer img {
+  display: block;
+  width: 100%; height: 100%;
+  object-fit: fill;
+  background: #000;
+}
+.compare .img-stage .divider {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 2px;
+  background: rgba(255,255,255,.85);
+  box-shadow: 0 0 6px rgba(0,0,0,.4);
+  pointer-events: none;
+  left: 50%;
+  transform: translateX(-1px);
+}
+.compare.empty .orig { opacity: .35; }
+/* image compare: hidden until an image is actually rendered (no empty black box on load) */
+#imgBox.empty { display: none; }
+.compare.empty .divider, .compare.empty .render-layer { display: none; }
+.compare .render-layer img[src=""], .compare .render-layer img:not([src]) { visibility: hidden; }
+
+  /* Floating log panel (bottom-right) */
+  #logPanel {
+    position: fixed; right: 16px; bottom: 16px; z-index: 60;
+    width: 460px; max-width: calc(100vw - 32px);
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.18);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    transition: height .15s ease;
+  }
+  #logPanel.folded { height: 38px; }
+  #logPanel.expanded { height: 320px; max-height: calc(100vh - 80px); }
+  #logPanel .log-head {
+    display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
+    padding: 8px 10px; cursor: pointer; user-select: none;
+    border-bottom: 1px solid var(--border); background: var(--card);
+  }
+  #logPanel.folded .log-head { border-bottom: 0; }
+  #logPanel .log-title { font-weight: 600; font-size: 13px; }
+  #logPanel .log-count {
+    font: 11px var(--mono); color: var(--muted);
+    padding: 1px 6px; border-radius: 4px; background: var(--accent-soft); color: #1a4aa8;
+  }
+  #logPanel .log-actions { margin-left: auto; display: flex; gap: 4px; }
+  #logPanel .log-btn {
+    background: transparent; border: 1px solid var(--border); border-radius: 5px;
+    padding: 2px 8px; font: 12px var(--mono); color: var(--text); cursor: pointer;
+  }
+  #logPanel .log-btn:hover { background: var(--accent-soft); }
+  #logPanel .log-body {
+    margin: 0; flex: 1 1 auto; overflow: auto;
+    font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all;
+    padding: 8px 10px; background: #1a1d22; color: #d6dde7;
+  }
+  #logPanel.folded .log-body { display: none; }
+
+/* ============================================================
+   components — 语义化类，取代原先散落的 77 处内联 style
+   规则：一律引用设计令牌，不写死颜色，便于统一换肤
+   ============================================================ */
+
+/* .sel 原为独立 <style> 块 */
+.sel { padding: 1px 4px; font-size: 12px; }
+
+/* ---- 文本尺寸 ---- */
+.text-xs  { font-size: 12px; }
+.text-2xs { font-size: 11px; }
+.dim      { color: var(--muted); }
+
+/* ---- 布局工具 ---- */
+.grow      { flex: 1; }
+.w-full    { width: 100%; }
+.mt-2      { margin-top: 2px; }
+.mt-4      { margin-top: 4px; }
+.mt-6      { margin-top: 6px; }
+.mt-8      { margin-top: 8px; }
+.mb-8      { margin-bottom: 8px; }
+
+/* 一行控件：按钮组 / 复选框行 / 内联字段 */
+.row-inline {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 4px;
+}
+.row-inline.gap-8 { gap: 8px; }
+
+/* 紧凑输入：路径框/预设名等 */
+.input-compact {
+  flex: 1; min-width: 150px; padding: 2px 6px; font-size: 12px;
+  background: var(--card); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+}
+.input-compact:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* 小节分隔线（原内联 hr 依赖未定义的 var(--line)，现已由令牌补上） */
+.divider { margin: 8px 0; border: 0; border-top: 1px solid var(--border); }
+
+/* 迷你按钮 */
+.btn-xs { padding: 2px 8px; font-size: 12px; }
+
+/* ============================================================
+   交互可见性：键盘焦点环 / 禁用态 / 忙碌态
+   ============================================================ */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn:focus-visible { outline-offset: 2px; }
+
+.btn[disabled], button[disabled] { opacity: .5; cursor: not-allowed; }
+.btn[aria-busy="true"] { position: relative; pointer-events: none; opacity: .75; }
+
+/* 屏幕阅读器专用文本 */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ============================================================
+   状态条：新增 sticky 版本，让右侧图片面板也能看到进度
+   ============================================================ */
+.statusbar { position: sticky; bottom: 0; background: var(--card); padding-top: 6px; }
+.statusbar .status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.status .dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto;
+}
+.status.is-running .dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.status.is-done    .dot { background: var(--ok); }
+.status.is-error   .dot { background: var(--danger); }
+.status .pct { font-variant-numeric: tabular-nums; color: var(--muted); }
+@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+
+/* 快捷键提示 */
+kbd {
+  font-family: var(--mono); font-size: 11px; padding: 1px 5px;
+  border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px;
+  background: var(--bg); color: var(--muted);
+}
+
+/* ============================================================
+   第二轮：其余内联样式收编为语义类
+   ============================================================ */
+
+/* --dim 是 --muted 的旧别名：原代码在 4 处引用它但从未定义，
+   导致 <h3> 小节标题与对比视图的次要文字颜色整条声明失效。 */
+:root { --dim: var(--muted); }
+
+/* 小节标题（原先两处内联分别写 margin:0 0 6px 0 / 8px 0 4px 0） */
+.section-title {
+  font-size: 13px; font-weight: 600; color: var(--dim); margin: 8px 0 6px 0;
+}
+.section-title:first-child { margin-top: 0; }
+
+/* 拖放区（渲染参数恢复） */
+.dropzone {
+  margin-top: 8px; padding: 8px 10px; min-height: 128px;
+  border: 1px dashed var(--border); border-radius: 6px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; font-size: 12px; color: var(--muted);
+  cursor: pointer; user-select: none;
+  transition: border-color .15s, background .15s;
+}
+.dropzone:hover, .dropzone.drop-active { border-color: var(--accent); background: var(--accent-soft); }
+.dropzone .dz-title { font-size: 15px; font-weight: 500; color: var(--text); }
+.dropzone .dz-hint  { margin-top: 6px; font-size: 12px; opacity: .75; }
+
+/* 预览视频（时间范围选择 / 对比） */
+.cmp-video {
+  width: 100%; max-height: 38vh; background: #000; border-radius: 8px; margin-top: 8px;
+}
+.cmp-video.modal { max-height: 42vh; display: none; }
+
+/* 表单网格：编码器 + 输出路径 */
+.field-grid {
+  display: grid; grid-template-columns: 150px minmax(300px, 350px);
+  gap: 12px; align-items: end;
+}
+@media (max-width: 900px) { .field-grid { grid-template-columns: 1fr; } }
+
+.inline-flex-nowrap { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.mt-10 { margin-top: 10px; }
+.mt-6  { margin-top: 6px; }
+.pos-rel { position: relative; }
+.w-64 { width: 64px; }
+.text-2xs-dim { font-size: 11px; opacity: .65; }

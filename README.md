@@ -101,7 +101,7 @@ DLSS5NR_vX.Y/
   runtime/webgpu/{onnxruntime_providers_webgpu,dxcompiler,dxil}.dll
   models/                         # NGX 模型 + 转发器（fp16/fp8）
   models/onnx/                    # ONNX 重建模型（.onnx 权重）
-  web/                            # 界面 + server.js
+  web/                            # 界面：index.html + css/ + js/ + server.js（必须整目录打包）
   tools/{node,ffmpeg,ffprobe}.exe # 便携运行时
   server_guard.exe                # 可选：关窗自动清理临时缓存
   Start_DLSS5NR.bat               # 双击启动（= start_ui.bat）
@@ -116,7 +116,9 @@ DLSS5NR_vX.Y/
    `cl src\guard\server_guard.c /O1 /MT /W3 /nologo /Fe:server_guard.exe` 亦可；
 4. **不要**把 `src/`、`build/`、`outputs/`、`.tmp_uploads/`、`.frame_previews/`、`*.log`
    打进包——发行包不需要源码与构建产物；
-5. 解压到**含中文或空格的路径**下试运行一次，确认启动与渲染正常。
+5. `web/` 必须**整目录**打包（`index.html` + `css/` + `js/` + `server.js`）；
+   前端改动后可先跑校验：`node tools/verify-web.js .` 与 `node tools/verify-static.js .`；
+6. 解压到**含中文或空格的路径**下试运行一次，确认启动与渲染正常。
 
 `.gitignore` 已把 `build/`、`models/`、`runtime/`、`tools/`、`outputs/`、`example/` 排除，
 仓库只存源码。
@@ -160,7 +162,23 @@ runtime/                    ONNX 后端运行库：onnxruntime.dll + DirectML.dl
 models/                     NR 模型与转发器（N 卡路径）
 models/onnx/                ONNX 重建模型权重（非 N 卡路径）
 tools/                      便携 node/ffmpeg/ffprobe
-web/                        浏览器界面 + 本地服务（node，无第三方依赖）
+web/                        浏览器界面 + 本地服务（node，无第三方依赖、无构建步骤）
+  index.html                页面外壳：仅结构（约 370 行）
+  css/app.css               设计令牌 + 布局 + 组件（按钮/输入/滑杆/状态/日志/弹层）
+  css/overlays.css          固定定位浮层（视频对比放大视图、电源按钮）
+  js/overlays-compare.js    视频对比播放器（自包含 IIFE）
+  js/app-core.js            基础：DOM 助手、应用根路径、滑杆绑定、输入与拖放
+  js/app-status.js          日志面板、状态轮询、任务配置构建
+  js/app-range.js           时间范围与「快速渲染当前帧」对比预览
+  js/app-image.js           图片渲染、图片批量渲染与对比视图
+  js/app-video-batch.js     视频批量渲染与显卡列表加载
+  js/app-params.js          参数持久化、渲染参数恢复、撤销/重做、命名预设
+  js/app-shortcuts.js       键盘快捷键（Ctrl+Enter 开始 / Esc 停止）
+  server.js                 本地服务：API、ffmpeg 与引擎子进程、静态资源
+tools/                      便携 node/ffmpeg/ffprobe + 前端校验脚本
+  verify-web.js             校验：JS 语法、全局作用域无重复声明、JS 引用的 id 都存在
+  verify-static.js          校验：静态资源路径与 MIME（复现 server.js 的解析逻辑）
+  audit-css-tokens.js       校验：所有 var(--x) 都有定义
 start_ui.bat                启动脚本（双击运行）
 ```
 
