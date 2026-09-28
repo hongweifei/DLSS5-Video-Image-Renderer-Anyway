@@ -2,6 +2,8 @@
 
 #include "depth_anything.h"
 
+#include "util.h"
+
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -32,11 +34,7 @@ DepthAnything::~DepthAnything() { destroy(); }
 bool DepthAnything::init(const std::string& dllDir, uint32_t fullW, uint32_t fullH,
                          uint32_t interval) {
     // widen UTF-8 dir once for all wide Win32/ORT calls
-    if (!dllDir.empty()) {
-        int n = MultiByteToWideChar(CP_UTF8, 0, dllDir.c_str(), (int)dllDir.size(), nullptr, 0);
-        m_dllDirW.assign((size_t)n, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, dllDir.c_str(), (int)dllDir.size(), &m_dllDirW[0], n);
-    }
+    m_dllDirW = dlss5nr::widen(dllDir);
     m_fullW = fullW;
     m_fullH = fullH;
     m_interval = std::max(1u, interval);

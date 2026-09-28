@@ -130,17 +130,22 @@ DLSS5NR_vX.Y/
 
 ```
 core/                     C++ 处理引擎（D3D12 + ffmpeg 管道）
-  main.cpp                入口：CLI、参数解析、渲染主循环
+  main.cpp                编排层：渲染主循环 runJob + daemon 模式
+  cli.*                   命令行：参数解析、用法文本、编码器策略（别名/NVENC 降级）
+  util.h                  UTF-8<->UTF-16 转换、路径绝对化、像素小工具（共享）
+  finalize.*              模型输出 → 编码器像素格式（Bayer 抖动 / 16-bit）
   d3d12_ctx.*             渲染上下文、纹理上传/回读、WARP 软渲染兜底
   dlssnr.*                NGX DLSS NR feature 加载与调用
   ngx_params.*            NGX 参数块构造
   nvof_flow.*             NVIDIA 硬件光流(NV-OF, D3D11) → 稀疏网格
   flow.*                  通用光流：D3D12 计算着色器（任意显卡/WARP）+ CPU 块匹配兜底
+  onnx_nr.*               DLSS5 ONNX 重建后端（WebGPU → DirectML → CPU 分块推理）
   densify_pass.*          D3D12 计算着色器：稀疏网格 → 全分辨率运动场
   blend_pass.*            GPU 残差混合 + Bayer 抖动降位
   depth_anything.*        深度推理（可选）
   video_pipe.*            ffmpeg 解码/编码子进程封装
-  build.sh / build.ps1    MSVC 构建脚本（自动探测 VS/MSVC/SDK 版本）
+  meta_io.*               渲染参数内嵌（mp4 comment / PNG tEXt / JPG COM）
+  build.sh / build.ps1    MSVC 构建脚本（自动探测 VS/MSVC/SDK；自动收集 *.cpp）
 web/                      浏览器界面 + 本地服务（node，无第三方依赖）
 server_guard.c            启动守护（关窗即清临时缓存）
 start_ui.bat              开发环境启动脚本

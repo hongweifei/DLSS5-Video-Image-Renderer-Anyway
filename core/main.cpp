@@ -10,8 +10,19 @@
 //
 // Hardware support: the whole pipeline (decode -> upload -> compute -> readback -> encode)
 // runs on any D3D12-capable GPU (AMD/Intel/NVIDIA) and falls back to the WARP software
-// renderer when no hardware device exists. Only the DLSS NR model itself (NGX) and NV-OF
-// require an NVIDIA GPU; without one the job still completes, skipping model inference.
+// renderer when no hardware device exists. The neural enhancement is available everywhere too:
+// NVIDIA uses the native NGX model, every other device runs the community ONNX reconstruction
+// (core/onnx_nr) via WebGPU, DirectML or the CPU.
+//
+// This file is the orchestration layer only. The supporting pieces live in their own units:
+//   cli.*       command line, options, encoder policy, usage text
+//   util.h      UTF-8 <-> UTF-16 conversion and small pixel helpers
+//   finalize.*  model output -> encoder pixel format (dither / 16-bit)
+//   video_pipe, d3d12_ctx, flow/nvof_flow, onnx_nr, dlssnr, ngx_params, blend_pass,
+//   densify_pass, depth_anything, meta_io
+//
+// The render loop is deliberately one function (runJob) because it owns a lot of per-job
+// state; each stage is marked with a banner comment and keeps its own error handling.
 
 #include <windows.h>
 // Windows.h defines min/max macros that clash with std::min/std::max used below.
@@ -23,7 +34,7 @@
 #include <cstdlib>
 #include <climits>
 #include <cmath>
-#include <iostream>
+#include <iostream>   // std::cin / std::getline for the daemon command loop
 #include <string>
 #include <vector>
 #include <array>
@@ -47,31 +58,23 @@
 #include "onnx_nr.h"
 #include "meta_io.h"
 
+#include "cli.h"
+#include "finalize.h"
+#include "util.h"
+
+using dlss5nr::expandRgba8ToRgba16;
+using dlss5nr::finalize16;
+using dlss5nr::finalizeToRgba8;
+using dlss5nr::makeUniqueOutput;
+using dlss5nr::narrow;
+using dlss5nr::Options;
+using dlss5nr::serializeRenderMeta;
+using dlss5nr::widen;
+using dlss5nr::writePng16;
+
 namespace {
 
-std::string narrow(const wchar_t* ws) {    if (!ws) return {};
-    int n = WideCharToMultiByte(CP_UTF8, 0, ws, -1, nullptr, 0, nullptr, nullptr);
-    if (n <= 1) return {};
-    std::string s((size_t)(n - 1), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws, -1, &s[0], n, nullptr, nullptr);
-    return s;
-}
-
-std::wstring widen(const std::string& s) {
-    if (s.empty()) return {};
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-    std::wstring ws((size_t)n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &ws[0], n);
-    return ws;
-}
-
-// CLI fallback for the model dll: the default template name ("nvngx_dlssnr.dll" /
-// "nvngx.dll_dlssnr.dll") may not exist once builds carry explicit _fp16/_fp8 suffixes, so probe
-// the suffixed variants when the template is missing. Only applied to the default names; an
-// explicit --snippet/--forwarder is used as-is (server always passes explicit absolute paths).
-// Since Sep-2026 the model dlls live in <root>/models/, probe both the cwd-relative and the
-// models/-relative locations (plus ../models/ for bare CLI runs started inside core/).
-static std::string probeModelDll(const std::string& name) {
+std::string probeModelDll(const std::string& name) {
     if (name.empty()) return name;
     auto probe = [&](const std::string& base) -> std::string {
         for (const auto& l : { base, "models/" + base, "../models/" + base }) {
@@ -130,262 +133,6 @@ void updateDepth(const uint8_t* cur, int W, int H, int interval, DepthBuffer& st
         state.initialized = true;
     }
     state.frameCount++;
-}
-// <stem>_nr<ext>, then <stem>_nr_1<ext>, _2, ... until the name is free.
-std::string makeUniqueOutput(const std::string& inputUtf8) {
-    namespace fs = std::filesystem;
-    fs::path p(widen(inputUtf8));
-    fs::path dir = p.parent_path();
-    if (dir.empty()) dir = fs::path(L".");
-    std::wstring stem = p.stem().wstring();
-    std::wstring ext = p.extension().wstring();
-    if (ext.empty()) ext = L".mp4";
-    int n = 0;
-    std::wstring cand;
-    do {
-        std::wstring suffix = (n == 0) ? L"_nr" : (L"_nr_" + std::to_wstring(n));
-        cand = (dir / (stem + suffix + ext)).wstring();
-        n++;
-    } while (fs::exists(cand));
-    return narrow(cand.c_str());
-}
-
-// Half-float (R16G16B16A16_FLOAT readback) -> float. Values we read are in 0..1.
-static inline float halfToFloat(uint16_t h) {
-    uint32_t s = (uint32_t)(h & 0x8000u) << 16;
-    uint32_t e = (h >> 10) & 0x1fu;
-    uint32_t m = h & 0x3ffu;
-    uint32_t bits;
-    if (e == 0) {
-        if (m == 0) bits = s;
-        else {
-            int ex = 127 - 24;   // subnormal half: value = m * 2^-24
-            while ((m & 0x400u) == 0) { m <<= 1; --ex; }
-            m &= 0x3ffu;
-            bits = s | ((uint32_t)ex << 23) | (m << 13);
-        }
-    } else if (e == 31) {
-        bits = s | 0x7f800000u;  // inf/nan -> clamps to 1 downstream
-    } else {
-        bits = s | ((e + 112u) << 23) | (m << 13);
-    }
-    float f;
-    memcpy(&f, &bits, 4);
-    return f;
-}
-
-// Blend the 16F NR result against the original (residualMult > 1) and quantise to 8-bit
-// exactly once, using a 4x4 Bayer ordered dither. The NR output used to be stored straight
-// into an R8G8B8A8_UNORM UAV (a silent round per pixel); the denoiser smoothed the grain
-// that used to hide 8-bit quantisation, so plain rounding left hard posterisation bands.
-static void finalizeToRgba8(const uint8_t* inRGBA, const uint8_t* outF16, uint8_t* dst,
-                            uint32_t width, uint32_t height, float residualMult) {
-    static const uint8_t bayer[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6},
-                                        {3, 11, 1, 9}, {15, 7, 13, 5}};
-    float m = residualMult;
-    if (m < 0.f) m = 0.f;
-    if (m > 2.f) m = 2.f;
-    const float inW = 1.f - m;
-    for (uint32_t y = 0; y < height; ++y) {
-        const uint8_t* bayRow = bayer[y & 3];
-        for (uint32_t x = 0; x < width; ++x) {
-            const size_t px = (size_t)y * width + x;
-            const uint8_t* in = inRGBA + px * 4;
-            const uint16_t* h = (const uint16_t*)(outF16 + px * 8);
-            float r = halfToFloat(h[0]);
-            float g = halfToFloat(h[1]);
-            float b = halfToFloat(h[2]);
-            if (inW != 0.f) {
-                const float inv = 1.f / 255.f;
-                r = inW * (float)in[0] * inv + m * r;
-                g = inW * (float)in[1] * inv + m * g;
-                b = inW * (float)in[2] * inv + m * b;
-            }
-            if (r < 0.f) r = 0.f; else if (r > 1.f) r = 1.f;
-            if (g < 0.f) g = 0.f; else if (g > 1.f) g = 1.f;
-            if (b < 0.f) b = 0.f; else if (b > 1.f) b = 1.f;
-            const float d = ((float)bayRow[x & 3] + 0.5f) / 16.f - 0.5f;
-            uint8_t* o = dst + px * 4;
-            o[0] = (uint8_t)(int)(r * 255.f + d + 0.5f);
-            o[1] = (uint8_t)(int)(g * 255.f + d + 0.5f);
-            o[2] = (uint8_t)(int)(b * 255.f + d + 0.5f);
-            o[3] = 255;
-        }
-    }
-}
-
-// 16-bit final image: residual-blend the 16F NR result with the 8-bit input in float, then
-// scale to 0..65535 WITHOUT dither (65536 levels make banding physically impossible). Used by
-// --png16 for the first rendered frame (image path): no 8-bit quantisation ever happens.
-static void finalize16(const uint8_t* inRGBA, const uint8_t* outF16, uint16_t* dst, uint32_t width,
-                       uint32_t height, float residualMult) {
-    float m = residualMult;
-    if (m < 0.f) m = 0.f;
-    if (m > 2.f) m = 2.f;
-    const float inW = 1.f - m;
-    for (uint32_t y = 0; y < height; ++y) {
-        const uint8_t* in = inRGBA + (size_t)y * width * 4;
-        const uint16_t* h = (const uint16_t*)(outF16 + (size_t)y * width * 8);
-        uint16_t* o = dst + (size_t)y * width * 4;
-        for (uint32_t x = 0; x < width; ++x, in += 4, h += 4, o += 4) {
-            float r = halfToFloat(h[0]), g = halfToFloat(h[1]), b = halfToFloat(h[2]);
-            if (inW != 0.f) {
-                const float inv = 1.f / 255.f;
-                r = inW * (float)in[0] * inv + m * r;
-                g = inW * (float)in[1] * inv + m * g;
-                b = inW * (float)in[2] * inv + m * b;
-            }
-            if (r < 0.f) r = 0.f; else if (r > 1.f) r = 1.f;
-            if (g < 0.f) g = 0.f; else if (g > 1.f) g = 1.f;
-            if (b < 0.f) b = 0.f; else if (b > 1.f) b = 1.f;
-            o[0] = (uint16_t)(int)(r * 65535.f + 0.5f);
-            o[1] = (uint16_t)(int)(g * 65535.f + 0.5f);
-            o[2] = (uint16_t)(int)(b * 65535.f + 0.5f);
-            o[3] = 65535;
-        }
-    }
-}
-
-// Writes a 16-bit RGB PNG through ffmpeg (raw rgba64le -> rgb48be PNG), encoding one frame.
-static bool writePng16(const std::string& pathUtf8, uint32_t width, uint32_t height,
-                       const uint16_t* rgba16) {
-    std::wstring cmd = L"ffmpeg -y -loglevel error -f rawvideo -pix_fmt rgba64le -s " +
-                       std::to_wstring(width) + L"x" + std::to_wstring(height) +
-                       L" -i - -frames:v 1 -pix_fmt rgb48be \"" + widen(pathUtf8) + L"\"";
-    FILE* p = _wpopen(cmd.c_str(), L"wb");
-    if (!p) return false;
-    const size_t row = (size_t)width * 4 * 2;
-    const char* src = (const char*)rgba16;
-    for (uint32_t y = 0; y < height; ++y) {
-        if (fwrite(src + (size_t)y * row, 1, row, p) != row) {
-            _pclose(p);
-            return false;
-        }
-    }
-    return _pclose(p) == 0;
-}
-
-struct Options {
-    std::string input;
-    std::string output;
-    std::string snippet = "nvngx_dlssnr.dll";
-    std::string forwarder = "nvngx.dll_dlssnr.dll";
-    std::string encoder = "h264_nvenc";
-    std::string extraArgs;
-    std::string pixFmt = "yuv420p";  // output pixel format; yuv444p (+lossless encoder) for preview
-    std::string dumpFrame;       // optional: write raw first decoded frame as PPM (preview)
-    double startTime = 0.0;      // decode window start, seconds
-    double endTime = 0.0;        // decode window end, seconds; 0 = end of file
-    bool keepAudio = true;
-    bool daemon = false;         // resident mode: keep loaded resources, serve jobs from stdin
-    int frameGuidance = 3;     // 0 = Force Zero (no motion), 3 = NV-OF hardware optical flow,
-                               // 4 = vendor-neutral optical flow (GPU compute / CPU fallback)
-    int mvecQuality = 2;       // flow engine tier: 0 FAST / 1 MEDIUM / 2 SLOW (default best)
-    int depthInterval = 0;     // Update depth-from-color every N frames; 0 = Force Zero
-    bool hwDecode = false;     // --hw-decode: NVDEC. Measured no faster than software decode in
-                               // this pipeline (data still round-trips to system memory) and it
-                               // has shown mid-stream stalls, so software is the default.
-    float residualMult = 1.0f; // 1.0 = pure model output; >1 amplifies detail residual like Magpie
-    bool frameReset = false;   // Per-frame reset: treat every frame independently (like a
-                               // real-time filter over a video window, no cross-frame history)
-    bool perf = false;         // --perf: print per-stage ms/frame breakdown at the end
-    int  gpuIdx = -1;          // --gpu-idx <N>: user-chosen DXGI adapter; -1 = auto
-    bool listGpus = false;     // --list-gpus: print every adapter and exit
-    bool warp = false;         // --warp: force the WARP software D3D12 device (CPU rendering)
-    bool bypassNr = false;     // --bypass-nr: skip DLSS NR inference (diagnostic passthrough)
-    bool onnxNr = false;       // --onnx-nr: force the ONNX DLSS5 reconstruction backend
-    std::string onnxModel;     // --onnx-model <path>: explicit .onnx path for the backend
-    std::string png16;         // --png16 <path>: write first frame as a 16-bit PNG (no banding)
-    DlssNrSettings nr;
-};
-
-// Compact JSON of the render-affecting parameters (whitelist shared with server.js): the UI
-// restores exactly these when a stamped file is dragged in. Paths/encoder/hardware knobs are
-// deliberately excluded.
-static std::string serializeRenderMeta(const Options& o) {
-    char buf[384];
-    int n = snprintf(buf, sizeof(buf),
-                     "{\"v\":1,\"preset\":%d,\"style\":%d,\"intensity\":%.4g,"
-                     "\"localTone\":%.4g,\"localStructure\":%.4g,\"skinStructure\":%.4g,"
-                     "\"autoMask\":%d,\"uiCorrection\":%d,\"residualMult\":%.4g,"
-                     "\"frameGuidance\":%d,\"mvecQuality\":%d,\"depthInterval\":%d,"
-                     "\"frameReset\":%s}",
-                     o.nr.preset, o.nr.style, (double)o.nr.intensity, (double)o.nr.localTone,
-                     (double)o.nr.localStructure, (double)o.nr.skinStructure, o.nr.useAutoMask,
-                     o.nr.uiCorrection, (double)o.residualMult, o.frameGuidance, o.mvecQuality,
-                     o.depthInterval, o.frameReset ? "true" : "false");
-    return n > 0 ? std::string(buf, (size_t)n) : std::string();
-}
-
-void usage() {
-    printf(
-        "dlss5nr - run DLSS 5 Neural Rendering over a video\n\n"
-        "  dlss5nr --input in.mp4 --output out.mp4 [options]\n\n"
-        "  --snippet <path>     nvngx_dlssnr.dll        (default: nvngx_dlssnr.dll)\n"
-        "  --forwarder <path>   nvngx.dll_dlssnr.dll    (default: nvngx.dll_dlssnr.dll)\n"
-        "  --encoder <name>     h264_nvenc | hevc_nvenc | libx264 | libx265\n"
-        "  --start-time <s>     process from this time offset (seconds)\n"
-        "  --end-time <s>       process up to this time (seconds); 0 = to the end\n"
-        "  --dump-frame <p.ppm> save the raw (unmodified) first decoded frame as a PPM image,\n"
-        "                       used by the single-frame preview so the UI gets an exact\n"
-        "                       before/after pair without decoding the video twice\n"
-        "  --no-audio           drop the source audio instead of copying it\n"
-        "  --hw-decode          NVDEC decode (experimental; not faster here, can stall)\n"
-        "  --codec-args <s>     extra arguments appended to the encoder\n"
-        "  --pix-fmt <s>         output pixel format (default yuv420p; yuv444p keeps 4:4:4 chroma)\n"
-        "  --frame-reset        process every frame independently (no cross-frame history),\n"
-        "                       matching how a real-time filter over a video behaves\n"
-        "  --bypass-nr          skip the DLSS NR inference (diagnostic: input -> colour/dither\n"
-        "                       path only, lets you isolate model artifacts from banding/grid)\n"
-        "  --png16 <png>        write the first rendered frame as a 16-bit RGB PNG (65536 levels,\n"
-        "                       no 8-bit quantisation => no colour banding; used by the image path)\n"
-        "  --gpu-idx <N>        pick the render GPU by index (see --list-gpus)\n"
-        "  --list-gpus          list every render-capable adapter and exit\n"
-        "  --warp               force the WARP software D3D12 device (CPU rendering; automatic\n"
-        "                       fallback when no hardware GPU can be initialised)\n"
-        "  --onnx-nr            force the ONNX DLSS5 reconstruction backend (community re-build\n"
-        "                       with real extracted weights; runs on CPU/any-GPU via DirectML)\n"
-        "  --onnx-model <path>  explicit .onnx path (default: probe models/onnx/*.onnx)\n\n"
-        "  Model controls (latched at feature creation):\n"
-        "  --preset <0..3>            NR Preset\n"
-        "  --intensity <f>            NR Intensity\n"
-        "  --style <0..2>             NR Style: 0 default, 1 natural, 2 cinematic\n"
-        "  --local-tone <f>           Local Tone Strength\n"
-        "  --local-structure <f>      Local Structure Strength\n"
-        "  --skin-structure <f>       Skin Structure Strength\n"
-        "  --auto-mask <0|1>          Automatic Mask\n"
-        "  --ui-correction <0|1>      NR UI Correction\n\n"
-        "  Temporal guides:\n"
-        "  --frame-guidance <0|3|4>  motion source: 0 Force Zero (no motion),\n"
-        "                            3 NVIDIA hardware optical flow (NV-OF; on a non-NVIDIA\n"
-        "                            device this automatically falls back to 4),\n"
-        "                            4 vendor-neutral optical flow: D3D12 compute on any GPU\n"
-        "                            (AMD/Intel/NVIDIA, incl. WARP) with a CPU matcher fallback.\n"
-        "                            NV-OF (3) needs a supported NVIDIA GPU + driver; the\n"
-        "                            generic flow (4) runs everywhere.\n"
-        "  --mvec-quality <0|1|2>    flow engine tier: 0 FAST (fastest, noisier flow),\n"
-        "                            1 MEDIUM, 2 SLOW (default: slowest, most accurate flow).\n"
-        "                            Quality mainly shows as flow noise on low-texture areas\n"
-        "  --depth-interval <N>       update depth from DepthAnything every N frames\n"
-        "                            (0 = Force Zero depth)\n"
-        "  --residual-mult <f>        residual reconstruction: out = in + (model-in)*f\n"
-        "                              (1.0..2.0; 1.0 = pure model output, Magpie defaults ~1.1)\n\n"
-        "  --perf                     print per-stage ms/frame breakdown (decode/NV-OF/depth/\n"
-        "                              upload/evaluate/download/encode) at the end of the run\n\n"
-        "Progress is written to stdout as: PROGRESS <done>/<total>\n");
-}
-
-bool parseInt(const char* s, int& out) {
-    return s && sscanf(s, "%d", &out) == 1;
-}
-bool parseFloat(const char* s, float& out) {
-    return s && sscanf(s, "%f", &out) == 1;
-}
-bool parseLong(const char* s, long long& out) {
-    return s && sscanf(s, "%lld", &out) == 1;
-}
-bool parseDouble(const char* s, double& out) {
-    return s && sscanf(s, "%lf", &out) == 1;
 }
 
 }  // namespace
@@ -977,9 +724,7 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
 
         // ------------------------------------------------------------- first-frame dump
         if (done == 0 && !opt.dumpFrame.empty()) {
-            int wn = MultiByteToWideChar(CP_UTF8, 0, opt.dumpFrame.c_str(), -1, nullptr, 0);
-            std::wstring wp((size_t)wn - 1, L'\0');
-            MultiByteToWideChar(CP_UTF8, 0, opt.dumpFrame.c_str(), -1, &wp[0], wn);
+            const std::wstring wp = widen(opt.dumpFrame);
             HANDLE hf = CreateFileW(wp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                                     FILE_ATTRIBUTE_NORMAL, nullptr);
             if (hf != INVALID_HANDLE_VALUE) {
@@ -1045,23 +790,23 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
         // The ONNX backend never touches GPU textures, so its upload is skipped entirely.
         auto tE = T();
         if (!onnx) {
-        if (useFlow) {
-            D3D12Ctx::UploadItem grid{st.texGrid.Get(), slots[s].mvec.data(),
-                                      flow->gridWidth() * 4, flow->gridHeight()};
-            D3D12Ctx::UploadItem color{st.texColor.Get(), inP, useRowBytes};
-            if (!st.ctx.uploadTexN({grid, color}, useH)) {
-                printf("ERROR: upload failed at frame %lld\n", done);
-                stopped = true;
-                break;
+            if (useFlow) {
+                D3D12Ctx::UploadItem grid{st.texGrid.Get(), slots[s].mvec.data(),
+                                          flow->gridWidth() * 4, flow->gridHeight()};
+                D3D12Ctx::UploadItem color{st.texColor.Get(), inP, useRowBytes};
+                if (!st.ctx.uploadTexN({grid, color}, useH)) {
+                    printf("ERROR: upload failed at frame %lld\n", done);
+                    stopped = true;
+                    break;
+                }
+            } else {
+                D3D12Ctx::UploadItem color{st.texColor.Get(), inP, useRowBytes};
+                if (!st.ctx.uploadTexN({color}, useH)) {
+                    printf("ERROR: upload failed at frame %lld\n", done);
+                    stopped = true;
+                    break;
+                }
             }
-        } else {
-            D3D12Ctx::UploadItem color{st.texColor.Get(), inP, useRowBytes};
-            if (!st.ctx.uploadTexN({color}, useH)) {
-                printf("ERROR: upload failed at frame %lld\n", done);
-                stopped = true;
-                break;
-            }
-        }
         }
         auto tF = T();
         addNs(perf.upColor, tE, tF);
@@ -1078,10 +823,13 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
                 stopped = true;
                 break;
             }
-            // residual blend model vs input, straight into the encoder buffer
+            // Residual blend of model vs source, straight into the encoder buffer. The ONNX
+            // model emits 8-bit sRGB, so this is a per-channel lerp on 0..255 values; the
+            // float-domain equivalent (for the 16F NGX output) lives in finalize.cpp.
             const float m = std::min(std::max(opt.residualMult, 0.f), 2.f);
             const float inW = 1.f - m;
-            for (size_t i = 0; i < (size_t)useW * useH * 4; i += 4) {
+            const size_t pixels = (size_t)useW * useH;
+            for (size_t i = 0; i < pixels * 4; i += 4) {
                 for (int c = 0; c < 3; ++c) {
                     float v = inW * (float)inP[i + c] + m * (float)onnxOut[i + c];
                     if (v < 0.f) v = 0.f; else if (v > 255.f) v = 255.f;
@@ -1089,56 +837,47 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
                 }
                 outBuf[i + 3] = 255;
             }
-            if (deepOut) {
-                // 10/12-bit output: expand the blended 8-bit result to 16-bit per channel
-                // (rgba64le) so the deep encoder path gets a correctly-sized buffer.
-                for (size_t i = 0, j = 0; i < (size_t)useW * useH * 4; i += 4, j += 4) {
-                    out16[j + 0] = (uint16_t)(outBuf[i + 0] * 257);
-                    out16[j + 1] = (uint16_t)(outBuf[i + 1] * 257);
-                    out16[j + 2] = (uint16_t)(outBuf[i + 2] * 257);
-                    out16[j + 3] = 65535;
-                }
-            }
+            // Deep (10/12-bit) output needs the 16-bit-per-channel form of the same pixels.
+            if (deepOut) expandRgba8ToRgba16(outBuf.data(), out16.data(), pixels);
+
             if (done == 0 && !opt.png16.empty()) {
-                std::vector<uint16_t> rgba16((size_t)useW * useH * 4);
-                for (size_t i = 0, j = 0; i < (size_t)useW * useH * 4; i += 4, j += 4) {
-                    rgba16[j + 0] = (uint16_t)(outBuf[i + 0] * 257);
-                    rgba16[j + 1] = (uint16_t)(outBuf[i + 1] * 257);
-                    rgba16[j + 2] = (uint16_t)(outBuf[i + 2] * 257);
-                    rgba16[j + 3] = 65535;
-                }
+                std::vector<uint16_t> rgba16(pixels * 4);
+                expandRgba8ToRgba16(outBuf.data(), rgba16.data(), pixels);
                 if (writePng16(opt.png16, useW, useH, rgba16.data())) {
                     printf("wrote 16-bit PNG -> %s\n", opt.png16.c_str());
+                    // Stamp the render parameters into the PNG (tEXt chunk) so the finished image
+                    // can restore the exact settings when dragged back into the UI.
                     injectMetaFile(opt.png16, makeMetaPayload(serializeRenderMeta(opt)));
                 }
             }
             result = 1;
         } else {
-        bool ok = st.ctx.execSync(
-            [&](ID3D12GraphicsCommandList* cmd) {
-                if (opt.bypassNr || !modelAvailable) {
-                    // Diagnostic passthrough (--bypass-nr) or no NVIDIA model available:
-                    // skip DLSS NR (and its motion densify is still fine to run for
-                    // diagnostics, but with the model gone there is nothing to guide, so
-                    // skip it too). The final colour path (residual 0 => pure input + dither)
-                    // still runs so the output stays a valid, watchable video.
-                    result = 1;
-                } else {
-                    if (useFlow) st.densify.record(cmd);   // sparse grid -> full-res texMvec
-                    result = st.nr.evaluate(cmd, st.params.ptr(), st.texColor.Get(),
-                                            st.texDepth.Get(), st.texMvec.Get(),
-                                            st.texOutput.Get(), useW, useH, useW, useH, opt.nr,
-                                            opt.frameReset || done == 0);
-                }
-                if (useGpuBlend) st.blend.record(cmd, (opt.bypassNr || !modelAvailable) ? 0.0f
-                                                                                        : opt.residualMult);
-            },
-            "densify+evaluate+blend");
-        if (!ok || result != 1) {
-            printf("ERROR: evaluate returned 0x%08X at frame %lld\n", (unsigned)result, done);
-            stopped = true;
-            break;
-        }
+            bool ok = st.ctx.execSync(
+                [&](ID3D12GraphicsCommandList* cmd) {
+                    if (opt.bypassNr || !modelAvailable) {
+                        // Diagnostic passthrough (--bypass-nr) or no NVIDIA model available:
+                        // skip DLSS NR and its motion densify (with the model gone there is
+                        // nothing to guide). The final colour path (residual 0 => pure input +
+                        // dither) still runs so the output stays a valid, watchable video.
+                        result = 1;
+                    } else {
+                        if (useFlow) st.densify.record(cmd);   // sparse grid -> full-res texMvec
+                        result = st.nr.evaluate(cmd, st.params.ptr(), st.texColor.Get(),
+                                                st.texDepth.Get(), st.texMvec.Get(),
+                                                st.texOutput.Get(), useW, useH, useW, useH,
+                                                opt.nr, opt.frameReset || done == 0);
+                    }
+                    if (useGpuBlend) {
+                        st.blend.record(cmd, (opt.bypassNr || !modelAvailable) ? 0.0f
+                                                                              : opt.residualMult);
+                    }
+                },
+                "densify+evaluate+blend");
+            if (!ok || result != 1) {
+                printf("ERROR: evaluate returned 0x%08X at frame %lld\n", (unsigned)result, done);
+                stopped = true;
+                break;
+            }
         }
         auto tH = T();
         if (!opt.bypassNr && (modelAvailable || onnx)) addNs(perf.evaluate, tG, tH);
@@ -1348,86 +1087,11 @@ int wmain(int argc, wchar_t** argv) {
     printf("dlss5nr starting (wmain)\n");
 
     Options opt;
+    int exitCode = 0;
+    if (dlss5nr::parseCommandLine(argc, argv, opt, exitCode) != 0) return exitCode;
 
-    // Flag-only options would be skipped by the value-consuming parse loop when nothing follows
-    // them, so scan for --daemon up front (e.g. "dlss5nr_engine --daemon").
-    for (int i = 1; i < argc; ++i) {
-        std::string flag = narrow(argv[i]);
-        if (flag == "--daemon") opt.daemon = true;
-        else if (flag == "--perf") opt.perf = true;
-        else if (flag == "--list-gpus") opt.listGpus = true;
-        else if (flag == "--warp") opt.warp = true;
-        else if (flag == "--onnx-nr") opt.onnxNr = true;
-    }
-
-    // Standalone metadata stamping: dlss5nr_engine --meta-inject out.png --meta-json '{"v":1,...}'
-    // Injects into PNG (tEXt) or JPG (COM marker), then exits without touching the GPU pipeline.
-    // server.js calls this after transcoding a stamped PNG to JPG (ffmpeg drops tEXt on transcode).
-    for (int i = 1; i < argc; ++i) {
-        std::string flag = narrow(argv[i]);
-        if (flag != "--meta-inject") continue;
-        std::string file = (i + 1 < argc) ? narrow(argv[i + 1]) : "";
-        std::string json;
-        for (int j = i + 2; j + 1 < argc; ++j)
-            if (narrow(argv[j]) == "--meta-json") json = narrow(argv[j + 1]);
-        if (file.empty() || json.empty()) {
-            fprintf(stderr,
-                    "usage: dlss5nr_engine --meta-inject <png|jpg> --meta-json <compactJson>\n");
-            return 2;
-        }
-        if (!injectMetaFile(file, makeMetaPayload(json))) {
-            fprintf(stderr, "meta-inject failed on %s (png/jpg only?)\n", file.c_str());
-            return 1;
-        }
-        printf("meta-injected: %s\n", file.c_str());
-        return 0;
-    }
-
-    for (int i = 1; i < argc; ++i) {
-        std::string a = narrow(argv[i]);
-        if (a == "--help" || a == "-h") {
-            usage();
-            return 0;
-        }
-        if (a[0] != '-' || i + 1 >= argc) continue;
-        std::string v = narrow(argv[++i]);
-
-        if (a == "--input") opt.input = v;
-        else if (a == "--output") opt.output = v;
-        else if (a == "--snippet") opt.snippet = v;
-        else if (a == "--forwarder") opt.forwarder = v;
-        else if (a == "--encoder") opt.encoder = v;
-        else if (a == "--codec-args") opt.extraArgs = v;
-        else if (a == "--pix-fmt") opt.pixFmt = v;
-        else if (a == "--dump-frame") opt.dumpFrame = v;
-        if (a == "--no-audio") { opt.keepAudio = false; --i; }
-        else if (a == "--hw-decode") { opt.hwDecode = true; --i; }
-        else if (a == "--daemon") { opt.daemon = true; --i; }
-        else if (a == "--start-time") parseDouble(v.c_str(), opt.startTime);
-        else if (a == "--end-time") parseDouble(v.c_str(), opt.endTime);
-        else if (a == "--preset") parseInt(v.c_str(), opt.nr.preset);
-        else if (a == "--intensity") parseFloat(v.c_str(), opt.nr.intensity);
-        else if (a == "--style") parseInt(v.c_str(), opt.nr.style);
-        else if (a == "--local-tone") parseFloat(v.c_str(), opt.nr.localTone);
-        else if (a == "--local-structure") parseFloat(v.c_str(), opt.nr.localStructure);
-        else if (a == "--skin-structure") parseFloat(v.c_str(), opt.nr.skinStructure);
-        else if (a == "--auto-mask") parseInt(v.c_str(), opt.nr.useAutoMask);
-        else if (a == "--ui-correction") parseInt(v.c_str(), opt.nr.uiCorrection);
-        else if (a == "--frame-reset") { opt.frameReset = true; --i; }
-        else if (a == "--bypass-nr") { opt.bypassNr = true; --i; }
-        else if (a == "--png16") opt.png16 = v;
-        else if (a == "--residual-mult") parseFloat(v.c_str(), opt.residualMult);
-        else if (a == "--frame-guidance") parseInt(v.c_str(), opt.frameGuidance);
-        else if (a == "--mvec-quality") parseInt(v.c_str(), opt.mvecQuality);
-        else if (a == "--depth-interval") parseInt(v.c_str(), opt.depthInterval);
-        else if (a == "--gpu-idx") parseInt(v.c_str(), opt.gpuIdx);
-        else if (a == "--warp") { opt.warp = true; --i; }
-        else if (a == "--onnx-nr") { opt.onnxNr = true; --i; }
-        else if (a == "--onnx-model") opt.onnxModel = v;
-        else if (a == "--perf") { opt.perf = true; --i; }
-    }
-
-    // GPU selection: list all adapters or honour the user-chosen DXGI index.
+    // GPU selection: list all adapters or honour the user-chosen DXGI index. Must happen before
+    // applyEncoderPolicy(), which asks the selected adapter for its vendor.
     if (opt.listGpus) {
         int n = d3dListGpus();
         printf("[gpu] count=%d\n", n);
@@ -1435,6 +1099,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (opt.gpuIdx >= 0) d3dSetAdapter(opt.gpuIdx);
     if (opt.warp) d3dUseWarp(true);
+
+    // Resolve encoder aliases and degrade NVENC on non-NVIDIA adapters.
+    dlss5nr::applyEncoderPolicy(opt);
 
     // Single-shot CLI mode or resident daemon (--daemon). Both share DaemonState so a
     // --daemon process keeps every heavy resource (D3D12, model feature, snippet DLL) loaded
@@ -1444,120 +1111,11 @@ int wmain(int argc, wchar_t** argv) {
         return runDaemon(st);
     }
 
-    // Encoder availability fallback: the *_nvenc hardware encoders need an NVIDIA GPU at
-    // runtime (ffmpeg loads nvcuda.dll lazily; `ffmpeg -encoders` lists nvenc even on machines
-    // without the driver, so the list alone cannot decide). Gate on the render adapter vendor
-    // instead: on a non-NVIDIA device (AMD/Intel/WARP) downgrade NVENC -> libx264/libx265 so
-    // the job renders successfully instead of failing when the encoder opens.
-    {
-        // tools/ ships with the release package; also probe ../tools so a bare repo checkout
-        // works without adding anything to PATH (same probe order the engine build uses).
-        wchar_t exeDirW2[MAX_PATH] = {};
-        GetModuleFileNameW(nullptr, exeDirW2, MAX_PATH);
-        std::wstring dir2(exeDirW2);
-        size_t slash2 = dir2.find_last_of(L"\\/");
-        if (slash2 != std::wstring::npos) dir2 = dir2.substr(0, slash2);
-        // exe lives in core/ (source build) or the package root: check <dir>/tools and
-        // <dir>/../tools.
-        std::wstring tools2 = dir2 + L"\\tools";
-        if (!std::filesystem::exists(tools2 + L"\\ffmpeg.exe")) {
-            std::wstring up = dir2 + L"\\..\\tools";
-            if (std::filesystem::exists(up + L"\\ffmpeg.exe")) tools2 = up;
-        }
-        if (std::filesystem::exists(tools2 + L"\\ffmpeg.exe")) {
-            std::string pathA = std::getenv("PATH") ? std::getenv("PATH") : "";
-            int pn = MultiByteToWideChar(CP_UTF8, 0, pathA.c_str(), -1, nullptr, 0);
-            std::wstring pathW((size_t)std::max(pn, 1), L'\0');
-            MultiByteToWideChar(CP_UTF8, 0, pathA.c_str(), -1, &pathW[0], pn);
-            SetEnvironmentVariableW(L"PATH", (tools2 + L";" + pathW).c_str());
-        }
-
-        if (opt.encoder.find("nvenc") != std::string::npos) {
-            const bool nvidiaGpu = !d3dIsWarp() && d3dRenderVendor() == 0x10DE;
-            bool have = nvidiaGpu;
-            if (have) {
-                // Double-check a (rare) ffmpeg build compiled without NVENC support.
-                std::string encList;
-                FILE* p = _wpopen(L"ffmpeg -hide_banner -encoders 2>nul", L"r");
-                if (p) {
-                    char buf[512];
-                    while (fgets(buf, sizeof(buf), p)) encList += buf;
-                    _pclose(p);
-                }
-                if (!encList.empty() && encList.find(opt.encoder) == std::string::npos)
-                    have = false;
-            }
-            if (!have) {
-                const bool hevc = opt.encoder.find("hevc") != std::string::npos;
-                const std::string alt = hevc ? "libx265" : "libx264";
-                printf("NOTE  : encoder %s needs an NVIDIA GPU; using %s instead\n",
-                       opt.encoder.c_str(), alt.c_str());
-                opt.encoder = alt;
-                // libx264 default quality: replace the NVENC -rc/-cq tail with a CRF value.
-                if (opt.extraArgs.find("-crf") == std::string::npos &&
-                    opt.extraArgs.find("-qp") == std::string::npos) {
-                    opt.extraArgs += hevc ? " -crf 20 -preset medium" : " -crf 18 -preset medium";
-                }
-            }
-        }
-    }
-
-    // 10-bit encoder aliases: *_10bit map to the base encoder + a 10-bit pixel format
-    // (yuv420p10le; NVENC also needs the main10 profile). The deep pipeline reads the 16F
-    // result back, so these outputs never touch an 8-bit quantisation.
-    if (opt.encoder == "hevc_nvenc_10bit") {
-        opt.encoder = "hevc_nvenc";
-        if (opt.pixFmt == "yuv420p") opt.pixFmt = "yuv420p10le";
-        if (opt.extraArgs.find("-profile:v") == std::string::npos)
-            opt.extraArgs += " -profile:v main10";
-    } else if (opt.encoder == "libx265_10bit") {
-        opt.encoder = "libx265";
-        if (opt.pixFmt == "yuv420p") opt.pixFmt = "yuv420p10le";
-    } else if (opt.encoder == "hevc10_master" || opt.encoder == "hevc10_lossless") {
-        // Master intermediate for the two-stage flow. Near-lossless 10-bit HEVC via NVENC so the
-        // master render stays at hardware-encode speed (a lossless libx265 master serialised the
-        // CPU and dropped long renders to a few fps). Re-exporting later is a fast transcode.
-        opt.encoder = "hevc_nvenc";
-        if (opt.pixFmt == "yuv420p") opt.pixFmt = "yuv420p10le";
-        if (opt.extraArgs.find("-profile:v") == std::string::npos)
-            opt.extraArgs += " -rc vbr -cq 14 -b:v 0 -profile:v main10";
-    }
-
-    // The alias above can re-select NVENC after the availability fallback ran; re-check the
-    // same way (vendor gate + encoder list).
-    if (opt.encoder.find("nvenc") != std::string::npos) {
-        bool have2 = !d3dIsWarp() && d3dRenderVendor() == 0x10DE;
-        if (have2) {
-            std::string encList2;
-            FILE* p2 = _wpopen(L"ffmpeg -hide_banner -encoders 2>nul", L"r");
-            if (p2) {
-                char buf2[512];
-                while (fgets(buf2, sizeof(buf2), p2)) encList2 += buf2;
-                _pclose(p2);
-            }
-            if (!encList2.empty() && encList2.find(opt.encoder) == std::string::npos)
-                have2 = false;
-        }
-        if (!have2) {
-            printf("NOTE  : encoder %s needs an NVIDIA GPU; using libx265/libx264 fallback\n",
-                   opt.encoder.c_str());
-            const bool hevc2 = opt.encoder.find("hevc") != std::string::npos;
-            opt.encoder = hevc2 ? "libx265" : "libx264";
-            if (opt.extraArgs.find("-crf") == std::string::npos &&
-                opt.extraArgs.find("-cq") == std::string::npos &&
-                opt.extraArgs.find("-qp") == std::string::npos) {
-                opt.extraArgs += hevc2 ? " -crf 14 -preset medium" : " -crf 16 -preset medium";
-            }
-        }
-    }
-
     if (opt.input.empty()) {
-        usage();
+        dlss5nr::usage();
         return 1;
     }
-    if (opt.output.empty()) {
-        opt.output = makeUniqueOutput(opt.input);
-    }
+    if (opt.output.empty()) opt.output = makeUniqueOutput(opt.input);
 
     DaemonState st;
     return runJob(st, opt, nullptr);

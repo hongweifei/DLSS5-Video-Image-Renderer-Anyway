@@ -91,12 +91,13 @@ Visual Studio 2022 with the C++ toolset was not found.
     Write-Host "  MSVC    : $MsvcVer"
     Write-Host "  SDK     : $SdkVer"
 
-    $sources = @(
-        'main.cpp', 'ngx_params.cpp', 'd3d12_ctx.cpp', 'dlssnr.cpp', 'video_pipe.cpp',
-        'nvof_flow.cpp', 'flow.cpp', 'depth_anything.cpp', 'onnx_nr.cpp',
-        'blend_pass.cpp', 'densify_pass.cpp', 'meta_io.cpp'
-    )
-    # Quote INCLUDE/LIB for cl's benefit; pass sources as separate arguments.
+    # Glob the translation units so a newly added .cpp builds without editing this script.
+    # server_guard.c lives at the repository root and is built separately (plain C, /MT).
+    $sources = Get-ChildItem -Path $coreDir -Filter *.cpp -File |
+        Sort-Object Name | Select-Object -ExpandProperty Name
+    if (-not $sources) { throw "no .cpp sources found in $coreDir" }
+    Write-Host "  sources : $($sources -join ' ')"
+
     & cl.exe /nologo /O2 /MD /EHa /std:c++17 /W3 @sources `
         /Fe:dlss5nr_engine.exe `
         /link d3d12.lib dxgi.lib d3d11.lib d3dcompiler.lib

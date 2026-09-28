@@ -14,6 +14,8 @@
 // keeps the value free of chars that would break ffmpeg's command line or container quoting.
 #include "meta_io.h"
 
+#include "util.h"
+
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -72,9 +74,7 @@ uint32_t crc32Of(const unsigned char* data, size_t len) {
 bool readWhole(const std::string& path, std::vector<unsigned char>& out) {
     FILE* f = nullptr;
     // Paths may be UTF-8 with non-ASCII (e.g. 中文 folders) — narrow fopen breaks on those.
-    std::wstring wp(path.begin(), path.end());
-    int n = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    if (n > 0) { wp.resize(n - 1); MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, &wp[0], n); }
+    const std::wstring wp = dlss5nr::widen(path);
     if (_wfopen_s(&f, wp.c_str(), L"rb") != 0 || !f) return false;
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
@@ -88,9 +88,7 @@ bool readWhole(const std::string& path, std::vector<unsigned char>& out) {
 
 bool writeWhole(const std::string& path, const std::vector<unsigned char>& data) {
     FILE* f = nullptr;
-    std::wstring wp;
-    int n = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    if (n > 0) { wp.resize(n - 1); MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, &wp[0], n); }
+    const std::wstring wp = dlss5nr::widen(path);
     if (_wfopen_s(&f, wp.c_str(), L"wb") != 0 || !f) return false;
     size_t nw = fwrite(data.data(), 1, data.size(), f);
     fclose(f);

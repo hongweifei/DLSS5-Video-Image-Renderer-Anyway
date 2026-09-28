@@ -1,4 +1,4 @@
-#include "video_pipe.h"
+﻿#include "video_pipe.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -20,17 +20,13 @@
 #endif
 
 #include <string>
+#include "util.h"
 
 namespace {
 
 #ifdef _WIN32
-std::wstring widen(const std::string& s) {
-    if (s.empty()) return {};
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-    std::wstring ws((size_t)n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &ws[0], n);
-    return ws;
-}
+// UTF-8 -> UTF-16 for the wide _wpopen path, shared with the rest of the engine.
+using dlss5nr::widen;
 std::wstring wquote(const std::wstring& s) { return L"\"" + s + L"\""; }
 #else
 std::string quote(const std::string& s) { return "\"" + s + "\""; }

@@ -7,6 +7,8 @@
 
 #include "onnx_nr.h"
 
+#include "util.h"
+
 #include <cstring>
 #include <cmath>
 #include <cstdio>
@@ -16,6 +18,9 @@
 #include <thread>
 
 #include "depth/onnxruntime_c_api.h"
+
+using dlss5nr::absolutePath;
+using dlss5nr::widen;
 
 // windows.h (included via onnx_nr.h) defines min/max macros that clash with std::min/std::max.
 #undef min
@@ -60,11 +65,7 @@ void OnnxNr::destroy() {
 
 bool OnnxNr::init(const std::string& dllDir, const std::string& modelPath, int threads) {
     m_threads = threads;
-    if (!dllDir.empty()) {
-        int n = MultiByteToWideChar(CP_UTF8, 0, dllDir.c_str(), (int)dllDir.size(), nullptr, 0);
-        m_dllDirW.assign((size_t)n, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, dllDir.c_str(), (int)dllDir.size(), &m_dllDirW[0], n);
-    }
+    m_dllDirW = dlss5nr::widen(dllDir);
     if (!loadOrt()) return false;
 
     // 1) WebGPU first: it accepts this graph where DirectML often does not, and it is the only
@@ -118,12 +119,7 @@ bool OnnxNr::loadOrt() {
     if (!m_dllDirW.empty()) SetDllDirectoryW(m_dllDirW.c_str());
     // LOAD_WITH_ALTERED_SEARCH_PATH only works with an ABSOLUTE dll path; the probe above
     // produces cwd-relative paths ("models/onnx/..."), so normalise both to absolute first.
-    auto absPath = [](const std::wstring& p) -> std::wstring {
-        wchar_t buf[MAX_PATH];
-        if (GetFullPathNameW(p.c_str(), MAX_PATH, buf, nullptr) > 0) return buf;
-        return p;
-    };
-    m_ortModule = (void*)LoadLibraryExW(absPath(ortPath).c_str(), nullptr,
+    m_ortModule = (void*)LoadLibraryExW(absolutePath(ortPath).c_str(), nullptr,
                                         LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!m_ortModule) {
         char buf[256];
@@ -133,7 +129,7 @@ bool OnnxNr::loadOrt() {
         return false;
     }
     // DirectML.dll is loaded by ORT on demand; probe it up front so the error message is clear.
-    m_dmlModule = (void*)LoadLibraryExW(absPath(dmlPath).c_str(), nullptr,
+    m_dmlModule = (void*)LoadLibraryExW(absolutePath(dmlPath).c_str(), nullptr,
                                         LOAD_WITH_ALTERED_SEARCH_PATH);
     // (not fatal: the CPU EP works without it)
 
@@ -222,9 +218,7 @@ bool OnnxNr::createWebGpuSession(const std::string& modelPath, void** outSession
         return false;
     }
 
-    int wn = MultiByteToWideChar(CP_UTF8, 0, modelPath.c_str(), -1, nullptr, 0);
-    std::wstring modelW((size_t)std::max(wn, 1), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, modelPath.c_str(), -1, &modelW[0], wn);
+    const std::wstring modelW = dlss5nr::widen(modelPath);
 
     OrtSessionOptions* so = nullptr;
     st = api->CreateSessionOptions(&so);
@@ -262,9 +256,7 @@ bool OnnxNr::createSession(const std::string& modelPath, int intraThreads, void*
                                                                       "OrtGetApiBase");
     api = getBase()->GetApi(ORT_API_VERSION);
 
-    int wn = MultiByteToWideChar(CP_UTF8, 0, modelPath.c_str(), -1, nullptr, 0);
-    std::wstring modelW((size_t)std::max(wn, 1), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, modelPath.c_str(), -1, &modelW[0], wn);
+    const std::wstring modelW = dlss5nr::widen(modelPath);
 
     // 1) DirectML (any GPU) - the fast path. Some graphs fail to compile on some drivers;
     //    fall through to CPU on any failure.

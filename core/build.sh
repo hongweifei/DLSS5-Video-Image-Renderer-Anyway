@@ -127,8 +127,15 @@ echo "  SDK     : $SDKVER"
 
 # Under WSL the linker needs the /Fe: output to land on the Windows side; run from the source
 # directory (which is on /mnt/...) and let cl.exe see the relative source names, as before.
+#
+# Sources are globbed so a newly added translation unit builds without editing this script;
+# server_guard.c lives at the repository root and is built separately (it is a plain C file).
+SOURCES=$(ls -1 *.cpp | tr '\n' ' ')
+echo "  sources : $SOURCES"
+
+# shellcheck disable=SC2086
 cl.exe /nologo /O2 /MD /EHa /std:c++17 /W3 \
-    main.cpp ngx_params.cpp d3d12_ctx.cpp dlssnr.cpp video_pipe.cpp nvof_flow.cpp flow.cpp depth_anything.cpp onnx_nr.cpp blend_pass.cpp densify_pass.cpp meta_io.cpp \
+    $SOURCES \
     /Fe:dlss5nr_engine.exe \
     /link d3d12.lib dxgi.lib d3d11.lib d3dcompiler.lib
 
