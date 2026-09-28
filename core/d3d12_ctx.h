@@ -17,6 +17,17 @@ using Microsoft::WRL::ComPtr;
 // buys nothing when the CPU is feeding frames one at a time anyway.
 void d3dSetAdapter(int index);
 int  d3dListGpus();
+// Opt all rendering into the WARP software rasterizer (D3D_FEATURE_LEVEL_12_1 capable, vendor
+// id 0x1414). Used by --warp when no hardware D3D12 device can be created or the user forces
+// it; the rest of the pipeline (upload/compute/readback) runs unchanged, just slower.
+void d3dUseWarp(bool on);
+// True once a WARP device has been (or will be) created; only informational.
+bool d3dIsWarp();
+// Vendor id of the render adapter (0x10DE NVIDIA, 0x8086 Intel, 0x1002 AMD, 0x1414 WARP),
+// or 0 when unknown. Lets callers decide which hardware paths are available (e.g. NV-OF).
+unsigned d3dRenderVendor();
+// True when the render adapter (or the OS default, when none was picked yet) can create a
+// hardware D3D12 device at feature level 11_0; false on CPU-only boxes (then WARP is used).
 // Returns the DXGI adapter rendering uses (same selection rules as D3D12), or null when none.
 // NV-OF and any other D3D11 consumer create their device on THIS adapter so hardware features
 // land on the real GPU even when the OS default adapter is an iGPU or a virtual display.

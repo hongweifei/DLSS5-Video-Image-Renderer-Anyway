@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "flow.h"
+
 // NVIDIA hardware optical flow (NV-OF) via a dedicated D3D11 device, mirroring how Magpie does
 // it. NV-OF's D3D11 interface needs no manual fence orchestration (unlike the D3D12 one), which
 // makes it reliable for frame-by-frame offline use.
@@ -16,7 +18,10 @@
 // this side (first on the CPU, then in a D3D11 compute shader); it now runs as a D3D12 pass that
 // writes texMvec directly on the main pipeline, which removed an 8MB GPU->CPU readback + 8MB
 // CPU->GPU re-upload of the motion field every frame. Only the small grid crosses to the CPU.
-class NvofMotion {
+//
+// Implements the same IFlow contract as GpuFlow/CpuFlow so main.cpp can swap the motion
+// backend without touching the render loop.
+class NvofMotion : public IFlow {
 public:
     NvofMotion() = default;
     ~NvofMotion();
@@ -24,24 +29,24 @@ public:
     NvofMotion(const NvofMotion&) = delete;
     NvofMotion& operator=(const NvofMotion&) = delete;
 
-    bool init(uint32_t w, uint32_t h);
-    bool ok() const { return m_ok; }
-    const char* lastError() const { return m_err.c_str(); }
-    uint32_t gridSize() const { return m_grid; }
-    uint32_t gridWidth() const { return m_gridW; }
-    uint32_t gridHeight() const { return m_gridH; }
+    bool init(uint32_t w, uint32_t h) override;
+    bool ok() const override { return m_ok; }
+    const char* lastError() const override { return m_err.c_str(); }
+    uint32_t gridSize() const override { return m_grid; }
+    uint32_t gridWidth() const override { return m_gridW; }
+    uint32_t gridHeight() const override { return m_gridH; }
 
     // NV-OF engine quality tier (NV_OF_PERF_LEVEL). 0 = FAST (high perf, lower quality),
     // 1 = MEDIUM, 2 = SLOW (lowest perf, best quality). Default 2 (SLOW) — this is an offline
     // renderer, so the best-quality tier costs nothing in wall time that matters. Must be set
     // before init().
-    void setQuality(int tier) { m_quality = tier; }
-    int quality() const { return m_quality; }
+    void setQuality(int tier) override { m_quality = tier; }
+    int quality() const override { return m_quality; }
 
     // Feed the next RGBA8 frame (w*h*4), produce the sparse flow grid (gridW*gridH, one
     // NV_OF_FLOW_VECTOR per cell, S10.5 /32 px scale) in outGrid. First frame yields zeros (no
     // previous reference yet).
-    bool feed(const uint8_t* curRGBA, uint8_t* outGrid);
+    bool feed(const uint8_t* curRGBA, uint8_t* outGrid) override;
 
 private:
     bool createSession();

@@ -24,9 +24,17 @@ void D3D12Ctx::setError(const char* msg) {
 
 // GPU selection is user-driven (web UI passes --gpu-idx). A -1 / unset still uses the
 // heuristic below (NVIDIA preferred, then most dedicated VRAM) as a sensible default.
+// d3dUseWarp(true) (--warp) forces the WARP software device, either because the user asked
+// for it or because no hardware D3D12 adapter could be initialised (CPU-only fallback).
 static int g_wantIdx = -1;
+static bool g_forceWarp = false;
+static bool g_usingWarp = false;
+static unsigned g_vendor = 0;   // vendor id of the selected adapter, 0 = unknown
 static ComPtr<IDXGIAdapter1> g_selAdapter;   // adapter chosen by d3dSetAdapter/d3dPickAdapter
 void d3dSetAdapter(int index) { g_wantIdx = index; }
+void d3dUseWarp(bool on) { g_forceWarp = on; }
+bool d3dIsWarp() { return g_usingWarp; }
+unsigned d3dRenderVendor() { return g_vendor; }
 
 static void collectAdapters(std::vector<ComPtr<IDXGIAdapter1>>& out);   // fwd decl
 static void d3dPickAdapter(const std::vector<ComPtr<IDXGIAdapter1>>& list);
@@ -147,17 +155,72 @@ static IDXGIAdapter1* pickBestAdapter() {
 }
 
 bool D3D12Ctx::init() {
-    ComPtr<IDXGIAdapter1> adapter(pickBestAdapter());   // may be null -> OS default
-    HRESULT hr = D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device));
-    if (FAILED(hr) && adapter) {
-        printf("[d3d12] preferred adapter failed (0x%08x), retrying with the system default\n", (unsigned)hr);
-        hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device));
-    }
-    if (FAILED(hr)) {
-        setError("D3D12CreateDevice failed");
-        return false;
+    g_usingWarp = false;
+    g_vendor = 0;
+
+    if (g_forceWarp) {
+        // Forced WARP (--warp): create the software device directly, no adapter probing.
+        g_usingWarp = true;
+        g_vendor = 0x1414;
+        printf("[d3d12] WARP software renderer forced (--warp)\n");
+        HRESULT hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device));
+        if (FAILED(hr)) {
+            setError("WARP D3D12CreateDevice failed (is Windows 8+ installed?)");
+            return false;
+        }
+        D3D12_FEATURE_DATA_ARCHITECTURE arch = {};
+        if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &arch,
+                                                    sizeof(arch))) && arch.UMA) {
+            printf("[d3d12] WARP device created (UMA, CPU-rendered)\n");
+        } else {
+            printf("[d3d12] WARP device created (CPU-rendered)\n");
+        }
+    } else {
+        ComPtr<IDXGIAdapter1> adapter(pickBestAdapter());   // may be null -> OS default
+        HRESULT hr = D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0,
+                                       IID_PPV_ARGS(&m_device));
+        if (FAILED(hr) && adapter) {
+            printf("[d3d12] preferred adapter failed (0x%08x), retrying with the system default\n",
+                   (unsigned)hr);
+            hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device));
+        }
+        if (FAILED(hr)) {
+            // No hardware D3D12 at all (e.g. a headless VM): fall back to the WARP software
+            // device so the whole non-model pipeline still runs on any PC.
+            printf("[d3d12] no hardware D3D12 device available (0x%08x), falling back to WARP\n",
+                   (unsigned)hr);
+            g_usingWarp = true;
+            g_vendor = 0x1414;
+            hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device));
+            if (FAILED(hr)) {
+                setError("D3D12CreateDevice failed (hardware and WARP)");
+                return false;
+            }
+            printf("[d3d12] WARP device created (CPU-rendered)\n");
+        }
+        if (g_selAdapter) {
+            DXGI_ADAPTER_DESC1 d;
+            if (SUCCEEDED(g_selAdapter->GetDesc1(&d))) g_vendor = d.VendorId;
+        } else if (!g_usingWarp) {
+            // OS default adapter: query its vendor so callers can gate NVIDIA-only paths.
+            ComPtr<IDXGIFactory4> factory;
+            ComPtr<IDXGIAdapter1> def;
+            if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) &&
+                factory->EnumAdapters1(0, &def) == S_OK) {
+                DXGI_ADAPTER_DESC1 d;
+                if (SUCCEEDED(def->GetDesc1(&d))) g_vendor = d.VendorId;
+            }
+        }
     }
 
+    printf("[d3d12] vendor=0x%04x (%s)\n", g_vendor,
+           g_usingWarp ? "WARP"
+           : g_vendor == 0x10DE ? "NVIDIA"
+           : g_vendor == 0x8086 ? "Intel"
+           : g_vendor == 0x1002 ? "AMD"
+           : "other");
+
+    HRESULT hr;
     D3D12_COMMAND_QUEUE_DESC qd = {};
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     qd.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
