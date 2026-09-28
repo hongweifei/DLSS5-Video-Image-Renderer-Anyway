@@ -4,27 +4,46 @@
 # PowerShell/CMD, or when WSL interop is disabled (WSL cannot run cl.exe without it).
 #
 # Usage:
-#   pwsh -File core\build.ps1
-#   pwsh -File core\build.ps1 -MsvcVer 14.44.35207 -SdkVer 10.0.26100.0
+#   powershell -File src\build.ps1
+#   powershell -File src\build.ps1 -Clean              # wipe build/ first
+#   powershell -File src\build.ps1 -Guard              # also build server_guard.exe
+#   powershell -File src\build.ps1 -MsvcVer 14.44.35207 -SdkVer 10.0.26100.0
 #
-# The toolchain is auto-detected via vswhere (any VS2022 edition, incl. Build Tools), so a
-# Visual Studio update does not break the build.
+# Outputs into <repo>/build/. The toolchain is auto-detected via vswhere (any VS2022 edition,
+# incl. Build Tools), so a Visual Studio update does not break the build.
 [CmdletBinding()]
 param(
     [string]$VsRoot,
     [string]$MsvcVer,
     [string]$SdkVer,
     [string]$WinKit = "C:\Program Files (x86)\Windows Kits\10",
-    [switch]$Clean
+    [switch]$Clean,
+    [switch]$Guard
 )
 
 $ErrorActionPreference = 'Stop'
 $coreDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoDir = Split-Path -Parent $coreDir
+$buildDir = Join-Path $repoDir 'build'
 Push-Location $coreDir
+
+# Builds the optional console guard (plain C, static CRT so it has no VC runtime dependency).
+function Build-Guard {
+    param([string]$OutDir)
+    $guardSrc = Join-Path $coreDir 'guard\server_guard.c'
+    if (-not (Test-Path $guardSrc)) { throw "guard source missing: $guardSrc" }
+    Write-Host "=== building server_guard ==="
+    & cl.exe /nologo /O1 /MT /W3 $guardSrc "/Fo$OutDir\" "/Fe:$(Join-Path $OutDir 'server_guard.exe')"
+    if ($LASTEXITCODE -ne 0) { throw "server_guard build failed with exit code $LASTEXITCODE" }
+    Write-Host "=== BUILD OK -> build\server_guard.exe ==="
+}
+
 try {
     if ($Clean) {
-        Get-ChildItem -Path $coreDir -Include *.obj, *.exe -File -ErrorAction SilentlyContinue |
-            Remove-Item -Force -ErrorAction SilentlyContinue
+        if (Test-Path $buildDir) {
+            Get-ChildItem -Path $buildDir -Include *.obj, *.exe -File -Recurse -ErrorAction SilentlyContinue |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+        }
         Write-Host "  cleaned build artifacts"
     }
 
@@ -92,20 +111,30 @@ Visual Studio 2022 with the C++ toolset was not found.
     Write-Host "  SDK     : $SdkVer"
 
     # Glob the translation units so a newly added .cpp builds without editing this script.
-    # server_guard.c lives at the repository root and is built separately (plain C, /MT).
+    # server_guard.c is plain C and is built separately (see -Guard below / build.sh).
     $sources = Get-ChildItem -Path $coreDir -Filter *.cpp -File |
         Sort-Object Name | Select-Object -ExpandProperty Name
     if (-not $sources) { throw "no .cpp sources found in $coreDir" }
     Write-Host "  sources : $($sources -join ' ')"
 
+    # Build into <repo>/build so object files and the exe never pollute the source tree.
+    $outDir = Join-Path (Split-Path -Parent $coreDir) 'build'
+    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    $exe = Join-Path $outDir 'dlss5nr_engine.exe'
+
+    # /Fo puts the .obj files in the same build dir; cl.exe is run from the source dir so the
+    # relative source names and quoted includes keep working.
     & cl.exe /nologo /O2 /MD /EHa /std:c++17 /W3 @sources `
-        /Fe:dlss5nr_engine.exe `
+        "/Fo$outDir\" /Fe:$exe `
         /link d3d12.lib dxgi.lib d3d11.lib d3dcompiler.lib
     if ($LASTEXITCODE -ne 0) { throw "cl.exe failed with exit code $LASTEXITCODE" }
 
-    $exe = Join-Path $coreDir 'dlss5nr_engine.exe'
     if (-not (Test-Path $exe)) { throw "build reported success but $exe is missing" }
-    Write-Host "=== BUILD OK -> core\dlss5nr_engine.exe ($((Get-Item $exe).Length) bytes) ==="
+    Write-Host "=== BUILD OK -> build\dlss5nr_engine.exe ($((Get-Item $exe).Length) bytes) ==="
+
+    if ($Guard) {
+        Build-Guard $outDir
+    }
 }
 finally {
     Pop-Location

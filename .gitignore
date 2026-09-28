@@ -2,9 +2,18 @@
 #  dlss5nr - source-only repository ignores
 #  Binaries, third-party runtime payloads and private notes are
 #  NOT redistributed here (see README for how to obtain them).
+#
+#  Layout (see README "目录结构"):
+#    src/       engine sources + build scripts + vendored headers
+#    build/     build output (created by src/build.ps1)
+#    runtime/   native runtime: onnxruntime + DirectML + webgpu plugin (not redistributed)
+#    models/    model weights (not redistributed)
+#    tools/     bundled portable node/ffmpeg (not redistributed)
+#    web/       browser UI + local service
 # ============================================================
 
-# ---- build artifacts ----
+# ---- build artifacts (all live under build/) ----
+build/
 *.obj
 *.o
 *.exe
@@ -15,16 +24,21 @@
 *.oldbin
 *.bak
 *.bak[0-9]
-core/dlss5nr_engine.exe
-server_guard.obj
 
 # ---- third-party model / forwarder binaries (not redistributed) ----
 models/
 
-# ---- ONNX Runtime + DirectML runtime payload (keep the MIT header) ----
+# ---- native runtime payload: ONNX Runtime + DirectML + WebGPU plugin (not redistributed) ----
+runtime/
+
+# ---- bundled portable runtime (node/ffmpeg/ffprobe) ----
+tools/
+
+# ---- legacy paths: pre-2026-09 layout kept sources and runtime in core/ ----
+core/dlss5nr_engine.exe
 core/depth/*.dll
 core/depth/*.onnx
-!core/depth/*.h
+server_guard.obj
 
 # ---- NVIDIA driver log noise ----
 NVIDIA Corporation/
@@ -37,6 +51,7 @@ outputs/
 .bench/
 .workbuddy/
 测试用视频/
+example/
 
 # ---- OS / editor junk ----
 Thumbs.db

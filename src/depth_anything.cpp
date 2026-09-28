@@ -1,4 +1,4 @@
-// DepthAnything V2 depth inference via ONNX Runtime + DirectML.
+﻿// DepthAnything V2 depth inference via ONNX Runtime + DirectML.
 
 #include "depth_anything.h"
 
@@ -15,7 +15,7 @@
 // The onnxruntime C API header defines typed opaque structs (OrtEnv*, OrtSession*, ...) and the
 // OrtApi function table. DirectML EP is appended via the DLL's exported
 // OrtSessionOptionsAppendExecutionProvider_DML symbol rather than the OrtApi table.
-#include "depth/onnxruntime_c_api.h"
+#include "third_party/onnxruntime/onnxruntime_c_api.h"
 
 namespace {
 

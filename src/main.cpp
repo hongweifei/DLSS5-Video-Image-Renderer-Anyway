@@ -60,6 +60,7 @@
 
 #include "cli.h"
 #include "finalize.h"
+#include "paths.h"
 #include "util.h"
 
 using dlss5nr::expandRgba8ToRgba16;
@@ -76,11 +77,14 @@ namespace {
 
 std::string probeModelDll(const std::string& name) {
     if (name.empty()) return name;
+    // Bare names resolve against the model directory (models/ beside the exe or the root);
+    // names carrying a separator are treated as explicit configs and used as-is.
     auto probe = [&](const std::string& base) -> std::string {
-        for (const auto& l : { base, "models/" + base, "../models/" + base }) {
-            if (std::filesystem::exists(widen(l))) return l;
+        if (base.find('/') != std::string::npos || base.find('\\') != std::string::npos) {
+            const std::string hit = dlss5nr::findAsset({base});
+            return hit;
         }
-        return std::string();
+        return dlss5nr::findAsset({"models/" + base, base});
     };
     std::string hit;
     if (!(hit = probe(name)).empty()) return hit;
@@ -250,37 +254,34 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
     if (modelAvailable) {
         printf("model  : NVIDIA NGX DLSS NR (native)\n");
     } else {
-        // Probe the ONNX model next to the models/ dir (same probe order as the snippet dlls).
+        // Resolve the ONNX model + native runtime through the shared layout resolver, which
+        // understands both the current (models/onnx + runtime/) and legacy (core/depth) trees.
         std::string model = opt.onnxModel;
         if (model.empty()) {
-            for (const char* cand : { "models/onnx/dlss5_real_static_256_fp16.onnx",
-                                      "../models/onnx/dlss5_real_static_256_fp16.onnx",
-                                      "models/onnx/dlss5_real_static_256.onnx",
-                                      "../models/onnx/dlss5_real_static_256.onnx" }) {
-                if (std::filesystem::exists(widen(cand))) { model = cand; break; }
-            }
+            model = dlss5nr::findAsset({
+                "models/onnx/dlss5_real_static_256_fp16.onnx",
+                "models/onnx/dlss5_real_static_256.onnx",
+            });
         }
+        const std::string dllDir = dlss5nr::findRuntimeDir();
         if (!model.empty() && (opt.onnxNr || !opt.bypassNr)) {
-            // dllDir: prefer core/depth next to the exe (source layout), fallback models/onnx.
-            wchar_t exeDirW3[MAX_PATH] = {};
-            GetModuleFileNameW(nullptr, exeDirW3, MAX_PATH);
-            std::wstring dir3(exeDirW3);
-            size_t slash3 = dir3.find_last_of(L"\\/");
-            if (slash3 != std::wstring::npos) dir3 = dir3.substr(0, slash3);
-            std::string dllDir;
-            for (const char* cand : { "models/onnx", "core/depth", "depth", "../core/depth" }) {
-                std::string p = std::string(cand) + "/onnxruntime.dll";
-                if (std::filesystem::exists(widen(p))) { dllDir = cand; break; }
-            }
-            onnx = std::make_unique<OnnxNr>();
-            if (onnx->init(dllDir, model, 0)) {
-                printf("model  : DLSS5 ONNX reconstruction (%s provider)\n  %s\n",
-                       onnx->provider(), model.c_str());
-                printf("         static-image tiling mode (256x256 tiles), real extracted weights\n");
+            if (dllDir.empty()) {
+                printf("WARNING: ONNX model found but no onnxruntime.dll/DirectML.dll in any\n");
+                printf("         runtime directory (looked in runtime/, core/depth/, "
+                       "models/onnx/);\n");
+                printf("         continuing WITHOUT model inference.\n");
             } else {
-                printf("WARNING: ONNX NR backend unavailable (%s); continuing WITHOUT model\n",
-                       onnx->lastError());
-                onnx.reset();
+                onnx = std::make_unique<OnnxNr>();
+                if (onnx->init(dllDir, model, 0)) {
+                    printf("model  : DLSS5 ONNX reconstruction (%s provider)\n  %s\n",
+                           onnx->provider(), model.c_str());
+                    printf("         runtime: %s\n", dllDir.c_str());
+                    printf("         static-image tiling mode (256x256 tiles), extracted weights\n");
+                } else {
+                    printf("WARNING: ONNX NR backend unavailable (%s); continuing WITHOUT model\n",
+                           onnx->lastError());
+                    onnx.reset();
+                }
             }
         } else if (!opt.bypassNr) {
             printf("NOTE  : DLSS NR model requires an NVIDIA GPU (detected vendor=0x%04x%s).\n",

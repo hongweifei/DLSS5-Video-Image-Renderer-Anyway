@@ -94,20 +94,31 @@ function cleanFrameDirOlder(ageMs) {
 }
 
 // Resolves the engine executable at job-start time (not module load) so a rebuild is picked
-// up automatically. Tries the canonical name first, then any dlss5nr*.exe in core/, so the
-// one-off rename used to dodge a locked-by-zombie exe never breaks the UI.
+// up automatically. Search order matches start_ui.bat:
+//   1. <root>/build/    - developer build produced by src/build.ps1
+//   2. <root>/          - release package (engine beside the launcher)
+//   3. <root>/core/     - legacy layout predating the build/ directory
+// Within each directory the canonical name wins, then any dlss5nr*.exe, so a one-off rename
+// used to dodge a locked-by-zombie exe never breaks the UI.
 function findEngine() {
-    const coreDir = path.join(ROOT, 'core');
+    const dirs = [
+        path.join(ROOT, 'build'),
+        ROOT,
+        path.join(ROOT, 'core'),
+    ];
     const candidates = ['dlss5nr_engine.exe', 'dlss5nr_run.exe', 'dlss5nr_app.exe', 'dlss5nr_core.exe', 'dlss5nr.exe'];
-    for (const c of candidates) {
-        const p = path.join(coreDir, c);
-        if (fs.existsSync(p)) return p;
+    for (const dir of dirs) {
+        for (const c of candidates) {
+            const p = path.join(dir, c);
+            if (fs.existsSync(p)) return p;
+        }
+        try {
+            const files = fs.readdirSync(dir).filter((f) => /^dlss5nr.*\.exe$/i.test(f));
+            if (files.length) return path.join(dir, files[0]);
+        } catch (e) { /* ignore */ }
     }
-    try {
-        const files = fs.readdirSync(coreDir).filter((f) => /^dlss5nr.*\.exe$/i.test(f));
-        if (files.length) return path.join(coreDir, files[0]);
-    } catch (e) { /* ignore */ }
-    return path.join(coreDir, 'dlss5nr_run.exe'); // reported only if it truly does not exist
+    // Reported only if it truly does not exist; keeps the error message concrete.
+    return path.join(ROOT, 'build', 'dlss5nr_engine.exe');
 }
 
 // Resolves the NR model dll + forwarder pair for a job. cfg.model selects the precision

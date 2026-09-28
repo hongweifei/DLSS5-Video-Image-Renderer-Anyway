@@ -16,7 +16,7 @@ ONNX 后端按 **WebGPU → DirectML → CPU** 顺序自动选择首个能编译
 
 - **WebGPU**（推荐）：经 Dawn 分发到 D3D12 / Vulkan / Metal，**跨厂商，且能编译这张含动态
   Shape/Gather 注意力掩码的大图**——实测 11144 个节点**全部在 GPU 上执行、零 CPU 回退**。
-  需要插件 EP（`models/onnx/webgpu/` 下的 `onnxruntime_providers_webgpu.dll` +
+  需要插件 EP（`runtime/webgpu/` 下的 `onnxruntime_providers_webgpu.dll` +
   `dxcompiler.dll` + `dxil.dll`）与 ONNX Runtime ≥ 1.24.4。
 - **DirectML**：能编译时很快，但部分驱动（如 Intel Iris Xe）会以 `E_INVALIDARG` 拒绝此图。
 - **CPU**：永远可用的兜底，自动多会话并行（每会话 8 线程，实测 0.87 tiles/s）。
@@ -66,20 +66,22 @@ libx264/libx265；运动矢量只在 N 卡原生路径下消耗，其他后端�
 
 ```powershell
 # 1) 编译引擎（推荐用 PowerShell 脚本，自动探测 VS/MSVC/SDK 版本）
-powershell -File core\build.ps1              # 产物 core\dlss5nr_engine.exe
+powershell -File src\build.ps1               # 产物 build\dlss5nr_engine.exe
+powershell -File src\build.ps1 -Guard        # 同时编译 server_guard.exe
 #    可选：-Clean 清理旧产物；-MsvcVer / -SdkVer / -VsRoot 手动指定工具链
 
-# 2) 准备模型与运行库（源码仓库不含二进制大文件）
+# 2) 准备模型与运行库（源码仓库不含二进制大文件，全部被 .gitignore 排除）
 #    models/           NGX 模型 + 转发器（N 卡原生路径）
-#    models/onnx/      非 N 卡用的 ONNX 重建模型 + onnxruntime.dll + DirectML.dll + webgpu/
-#    core/depth/       深度推理运行库（可选）
+#    models/onnx/      非 N 卡用的 ONNX 重建模型（.onnx 权重）
+#    runtime/          onnxruntime.dll + DirectML.dll + webgpu/ 插件（ONNX 后端运行库）
+#    tools/            便携 node/ffmpeg/ffprobe
 #    这些都在 Releases 发行包里，解压覆盖到源码根目录即可
 
 # 3) 启动界面
 start_ui.bat
 ```
 
-也可以从 Git-Bash 构建：`cd core && bash build.sh`（脚本会在 WSL / Git-Bash / 原生
+也可以从 Git-Bash 构建：`cd src && bash build.sh`（脚本会在 WSL / Git-Bash / 原生
 shell 下自动转换路径）。**注意**：若 `bash` 指向 WSL 且未开启 interop，Windows 的
 `cl.exe` 无法执行，脚本会提示改用 `build.ps1`。
 
@@ -88,14 +90,17 @@ shell 下自动转换路径）。**注意**：若 `bash` 指向 WSL 且未开启
 
 ### 打包发布
 
-仓库没有发布脚本，发行包就是「源码目录 + 二进制 payload」按下面的布局压缩：
+发行包是「引擎 + 二进制 payload + 界面」按下面的布局压缩。注意源码目录（`src/`、`build/`）
+**不进发行包**——发行包把引擎放在根目录，直接双击即用：
 
 ```
 DLSS5NR_vX.Y/
-  core/dlss5nr_engine.exe        # build.ps1 的产物
-  core/depth/{onnxruntime,DirectML}.dll
+  dlss5nr_engine.exe              # src/build.ps1 的产物（build\ 里取出）
+  runtime/onnxruntime.dll         # ONNX 后端运行库（单一副本）
+  runtime/DirectML.dll
+  runtime/webgpu/{onnxruntime_providers_webgpu,dxcompiler,dxil}.dll
   models/                         # NGX 模型 + 转发器（fp16/fp8）
-  models/onnx/                    # 非 N 卡的 ONNX 模型 + ORT + DML + webgpu/
+  models/onnx/                    # ONNX 重建模型（.onnx 权重）
   web/                            # 界面 + server.js
   tools/{node,ffmpeg,ffprobe}.exe # 便携运行时
   server_guard.exe                # 可选：关窗自动清理临时缓存
@@ -105,51 +110,64 @@ DLSS5NR_vX.Y/
 
 打包检查清单：
 
-1. `powershell -File core\build.ps1 -Clean` 得到干净的 `dlss5nr_engine.exe`；
-2. 确认二进制 payload 齐全：`models/`、`models/onnx/`（含 `webgpu/`）、`core/depth/`、`tools/`；
-3. `server_guard.exe` 若随包发布，用 `/MT` 静态 CRT 编译以去掉 VC 运行库依赖：
-   `cl server_guard.c /O1 /MT /W3 /nologo /Fe:server_guard.exe`；
-4. **不要**把 `example/`、`outputs/`、`.tmp_uploads/`、`.frame_previews/`、`*.log` 打进包；
+1. `powershell -File src\build.ps1 -Clean -Guard` 得到干净的引擎与守护程序；
+2. 确认二进制 payload 齐全：`models/`、`models/onnx/`、`runtime/`（含 `webgpu/`）、`tools/`；
+3. `server_guard.exe` 由 `src\build.ps1 -Guard` 一并产出（`/MT` 静态 CRT，无 VC 运行库依赖）；
+   `cl src\guard\server_guard.c /O1 /MT /W3 /nologo /Fe:server_guard.exe` 亦可；
+4. **不要**把 `src/`、`build/`、`outputs/`、`.tmp_uploads/`、`.frame_previews/`、`*.log`
+   打进包——发行包不需要源码与构建产物；
 5. 解压到**含中文或空格的路径**下试运行一次，确认启动与渲染正常。
 
-`.gitignore` 已把 `models/`、`models/onnx/`、`example/`、构建产物排除，仓库只存源码。
+`.gitignore` 已把 `build/`、`models/`、`runtime/`、`tools/`、`outputs/`、`example/` 排除，
+仓库只存源码。
 
 ### Releases 资产说明
 
 | 资产 | 内容 | 适用 |
 |---|---|---|
-| 完整发行包 `DLSS5NR_v1.5.zip` | 引擎 + 界面 + NR 模型(fp16/fp8) + 深度运行库 + 便携 node/ffmpeg + 启动脚本 + 使用说明 | 所有用户：解压 → 双击启动 → 浏览器操作 |
+| 完整发行包 `DLSS5NR_v1.5.zip` | 引擎 + 界面 + NR 模型(fp16/fp8) + ONNX 重建模型 + 运行库 + 便携 node/ffmpeg + 启动脚本 | 所有用户：解压 → 双击启动 → 浏览器操作 |
 
-包内 `models/` 与 `core/depth/` 已按引擎探测路径排好：`models/` 放 NR 模型与配套转发器
-（`nvngx_dlssnr_fp16.dll` / `nvngx_dlssnr_fp8.dll` + `nvngx.dll_dlssnr_fp16.dll` /
-`nvngx.dll_dlssnr_fp8.dll`，文件名勿改），`core/depth/` 为可选的深度推理运行库。
+包内 `models/` 放 NR 模型与配套转发器（`nvngx_dlssnr_fp16.dll` / `nvngx_dlssnr_fp8.dll` +
+`nvngx.dll_dlssnr_fp16.dll` / `nvngx.dll_dlssnr_fp8.dll`，**文件名勿改**）；
+`models/onnx/` 放 ONNX 重建模型；`runtime/` 放 ONNX 后端运行库与其 `webgpu/` 插件。
 
 ---
 
 ## 目录结构
 
 ```
-core/                     C++ 处理引擎（D3D12 + ffmpeg 管道）
-  main.cpp                编排层：渲染主循环 runJob + daemon 模式
-  cli.*                   命令行：参数解析、用法文本、编码器策略（别名/NVENC 降级）
-  util.h                  UTF-8<->UTF-16 转换、路径绝对化、像素小工具（共享）
-  finalize.*              模型输出 → 编码器像素格式（Bayer 抖动 / 16-bit）
-  d3d12_ctx.*             渲染上下文、纹理上传/回读、WARP 软渲染兜底
-  dlssnr.*                NGX DLSS NR feature 加载与调用
-  ngx_params.*            NGX 参数块构造
-  nvof_flow.*             NVIDIA 硬件光流(NV-OF, D3D11) → 稀疏网格
-  flow.*                  通用光流：D3D12 计算着色器（任意显卡/WARP）+ CPU 块匹配兜底
-  onnx_nr.*               DLSS5 ONNX 重建后端（WebGPU → DirectML → CPU 分块推理）
-  densify_pass.*          D3D12 计算着色器：稀疏网格 → 全分辨率运动场
-  blend_pass.*            GPU 残差混合 + Bayer 抖动降位
-  depth_anything.*        深度推理（可选）
-  video_pipe.*            ffmpeg 解码/编码子进程封装
-  meta_io.*               渲染参数内嵌（mp4 comment / PNG tEXt / JPG COM）
-  build.sh / build.ps1    MSVC 构建脚本（自动探测 VS/MSVC/SDK；自动收集 *.cpp）
-web/                      浏览器界面 + 本地服务（node，无第三方依赖）
-server_guard.c            启动守护（关窗即清临时缓存）
-start_ui.bat              开发环境启动脚本
+src/                        C++ 引擎源码 + 构建脚本 + 第三方头文件
+  main.cpp                  编排层：渲染主循环 runJob + daemon 模式
+  cli.*                     命令行：参数解析、用法文本、编码器策略（别名/NVENC 降级）
+  paths.*                   资源布局解析（模型/运行库/便携工具的查找与旧布局兼容）
+  util.h                    UTF-8<->UTF-16 转换、路径绝对化、像素小工具（共享）
+  finalize.*                模型输出 → 编码器像素格式（Bayer 抖动 / 16-bit）
+  d3d12_ctx.*               渲染上下文、纹理上传/回读、WARP 软渲染兜底
+  dlssnr.* / ngx_params.*   NGX DLSS NR feature 加载与参数块构造
+  nvof_flow.*               NVIDIA 硬件光流(NV-OF, D3D11) → 稀疏网格
+  flow.*                    通用光流：D3D12 计算着色器（任意显卡/WARP）+ CPU 块匹配兜底
+  onnx_nr.*                 DLSS5 ONNX 重建后端（WebGPU → DirectML → CPU 分块推理）
+  densify_pass.* / blend_pass.*  稀疏网格致密化 / GPU 残差混合 + 抖动降位
+  depth_anything.*          深度推理（可选）
+  video_pipe.*              ffmpeg 解码/编码子进程封装
+  meta_io.*                 渲染参数内嵌（mp4 comment / PNG tEXt / JPG COM）
+  build.sh / build.ps1      MSVC 构建脚本（自动探测工具链；自动收集 *.cpp；输出到 build/）
+  guard/server_guard.c      启动守护源码（关窗即清临时缓存）
+  third_party/nvof/         NVIDIA NV-OF 头文件（上游，宽松许可）
+  third_party/onnxruntime/  ONNX Runtime C API 头文件（上游，MIT）
+build/                      构建产物（.obj + .exe，由 src/build.ps1 生成）
+runtime/                    ONNX 后端运行库：onnxruntime.dll + DirectML.dll + webgpu/ 插件
+models/                     NR 模型与转发器（N 卡路径）
+models/onnx/                ONNX 重建模型权重（非 N 卡路径）
+tools/                      便携 node/ffmpeg/ffprobe
+web/                        浏览器界面 + 本地服务（node，无第三方依赖）
+start_ui.bat                启动脚本（双击运行）
 ```
+
+> **布局说明**：`src/build.ps1` 把产物写进 `build/`；引擎按**可执行文件所在目录**向上
+> 探测 `models/`、`runtime/`、`tools/`，因此开发者（exe 在 `build/`）与发行包（exe 在根）
+> 两种布局都能直接工作。旧版把运行库放在 `core/depth/`、插件放在 `models/onnx/webgpu/`
+> 的发行包**仍然兼容**（`src/paths.cpp` 会依次探测）。
 
 ## 构建（Windows）
 
@@ -158,34 +176,41 @@ start_ui.bat              开发环境启动脚本
 
 ```powershell
 # 推荐：原生 PowerShell（Windows 下最省事）
-powershell -File core\build.ps1
-powershell -File core\build.ps1 -Clean      # 先清理旧产物
+powershell -File src\build.ps1
+powershell -File src\build.ps1 -Clean        # 先清理旧产物
+powershell -File src\build.ps1 -Guard        # 同时编译 server_guard.exe
 ```
 
 ```bash
 # 备选：Git-Bash / MSYS2
-cd core && bash build.sh
+cd src && bash build.sh
+GUARD=1 bash build.sh      # 同时编译守护程序
 
 # 备选：手动指定工具链（自动探测失败时）
 #   PowerShell: -VsRoot / -MsvcVer / -SdkVer
 #   bash:       VSROOT=... MSVCVER=... SDKVER=... bash build.sh
 ```
 
-脚本会打印实际使用的 VS / MSVC / SDK 版本；产物为 `core/dlss5nr_engine.exe`。
+脚本会打印实际使用的 VS / MSVC / SDK 版本；产物为 `build/dlss5nr_engine.exe`
+（发行时把它放到包根目录即可，引擎会自动向上探测 `models/`、`runtime/`、`tools/`）。
 
 引擎通过 ffmpeg 子进程编解码，运行期需要 `ffmpeg`/`ffprobe` 与 `node`：
 `start_ui.bat` 会优先使用 `tools\` 里的便携版并自动加入 PATH。
 
-`server_guard.exe`（可选，负责关窗时清理临时缓存）单独编译，静态 CRT 以免依赖 VC 运行库：
+`server_guard.exe`（可选，负责关窗时清理临时缓存）用 `/MT` 静态 CRT 编译，以免依赖
+VC 运行库；由 `src\build.ps1 -Guard` 自动产出，也可手动：
 
 ```bash
-cl server_guard.c /O1 /MT /W3 /nologo /Fe:server_guard.exe
+cl src\guard\server_guard.c /O1 /MT /W3 /nologo /Fe:server_guard.exe
 ```
+
+> `server_guard.c` 含中文字符串，文件为 **UTF-16LE（带 BOM）**。用编辑器改动时请保持该
+> 编码，否则 MSVC 会报 `C2001: newline in constant`。
 
 ## 命令行参数
 
 ```bash
-core/dlss5nr_engine.exe --input in.mp4 --output out.mp4 \
+build/dlss5nr_engine.exe --input in.mp4 --output out.mp4 \
   --encoder h264_nvenc --residual-mult 1.0 --frame-guidance 3 \
   --end-time 5 --perf
 ```
@@ -216,16 +241,23 @@ core/dlss5nr_engine.exe --input in.mp4 --output out.mp4 \
 
 ### 部署 ONNX 后端（非 N 卡用户）
 
-放在 `models/onnx/`（引擎自动探测）：
+需要两组文件（引擎自动探测）：
 
-1. `dlss5_real_static_256_fp16.onnx` — 模型（约 301 MB），从
-   [taowen/dlss5-onnx](https://huggingface.co/taowen/dlss5-onnx) 下载
-2. `onnxruntime.dll` — **ONNX Runtime ≥ 1.24.4**（GPU 路径需要；DirectML 版同时含 DML 支持）
-3. `DirectML.dll` — 可选，DirectML 兜底路径用（可用系统 `C:\Windows\System32\DirectML.dll`）
-4. `webgpu/` 子目录 — **WebGPU 插件 EP**（推荐，`onnxruntime_providers_webgpu.dll` +
-   `dxcompiler.dll` + `dxil.dll`，来自 NuGet 包 `Microsoft.ML.OnnxRuntime.EP.WebGpu`）
+**1) 模型权重** → `models/onnx/`
+
+- `dlss5_real_static_256_fp16.onnx` — 约 301 MB，从
+  [taowen/dlss5-onnx](https://huggingface.co/taowen/dlss5-onnx) 下载
+
+**2) 原生运行库** → `runtime/`
+
+- `onnxruntime.dll` — **ONNX Runtime ≥ 1.24.4**
+- `DirectML.dll` — DirectML 兜底路径用（可用系统 `C:\Windows\System32\DirectML.dll`）
+- `webgpu/` 子目录 — **WebGPU 插件 EP**（推荐）：`onnxruntime_providers_webgpu.dll` +
+  `dxcompiler.dll` + `dxil.dll`，来自 NuGet 包 `Microsoft.ML.OnnxRuntime.EP.WebGpu`
 
 缺失时会逐级降级（无 WebGPU → DirectML → CPU → 无模型直通），并在日志中说明原因。
+运行库与 WebGPU 插件**只需一份**放在 `runtime/`；旧发行包把它们分散在 `core/depth/` 与
+`models/onnx/webgpu/` 也能被自动探测到。
 
 **性能参考**（720p / 每帧 15 个 256×256 分块 / Intel Iris Xe 笔记本，16 线程）：
 
@@ -257,8 +289,8 @@ DirectML 在这台机器上**拒绝编译该图**（`E_INVALIDARG`），故未�
 
 界面、引擎与视频处理流程为本项目独立编写。
 
-- `core/nvof/` 头文件：Copyright (c) 2018-2023 NVIDIA Corporation，宽松许可（见文件头）。
-- `core/depth/onnxruntime_c_api.h`：ONNX Runtime 项目头文件，MIT 许可。
+- `src/third_party/nvof/` 头文件：Copyright (c) 2018-2023 NVIDIA Corporation，宽松许可（见文件头）。
+- `src/third_party/onnxruntime/`：ONNX Runtime 项目头文件，MIT 许可。
 - **Releases 中的模型与转发器为社区/原作者作品**，打包发布前请自行确认其许可与
   NVIDIA 软件许可条款允许；请勿用于商业用途。
 - **ONNX 权重（`models/onnx/*.onnx`）源自 NVIDIA 专有模型**，本仓库不附带、需用户自行

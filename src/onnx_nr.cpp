@@ -7,6 +7,7 @@
 
 #include "onnx_nr.h"
 
+#include "paths.h"
 #include "util.h"
 
 #include <cstring>
@@ -17,7 +18,7 @@
 #include <mutex>
 #include <thread>
 
-#include "depth/onnxruntime_c_api.h"
+#include "third_party/onnxruntime/onnxruntime_c_api.h"
 
 using dlss5nr::absolutePath;
 using dlss5nr::widen;
@@ -66,6 +67,14 @@ void OnnxNr::destroy() {
 bool OnnxNr::init(const std::string& dllDir, const std::string& modelPath, int threads) {
     m_threads = threads;
     m_dllDirW = dlss5nr::widen(dllDir);
+    // Remember the model's own directory: a package may keep a webgpu/ plugin copy there.
+    {
+        std::string modelDir = modelPath;
+        size_t cut = modelDir.find_last_of("/\\");
+        if (cut != std::string::npos) modelDir = modelDir.substr(0, cut);
+        else modelDir.clear();
+        m_modelDirW = dlss5nr::widen(modelDir);
+    }
     if (!loadOrt()) return false;
 
     // 1) WebGPU first: it accepts this graph where DirectML often does not, and it is the only
@@ -173,18 +182,36 @@ bool OnnxNr::createWebGpuSession(const std::string& modelPath, void** outSession
         return false;
     }
 
-    // Locate the plugin: either beside the runtime or in the webgpu/ subdirectory.
-    wchar_t cwd[MAX_PATH] = {};
-    GetCurrentDirectoryW(MAX_PATH, cwd);
+    // Locate the WebGPU plugin. It normally sits in webgpu/ beside the runtime dlls, but a
+    // release package may keep it under models/onnx/webgpu/, and an explicit --onnx-model
+    // directory may carry its own copy, so all of those are probed.
     std::wstring wgpu;
-    for (const std::wstring& cand : { m_dllDirW + L"\\webgpu\\onnxruntime_providers_webgpu.dll",
-                                      m_dllDirW + L"\\onnxruntime_providers_webgpu.dll" }) {
-        DWORD a = GetFileAttributesW(cand.c_str());
-        if (a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY)) { wgpu = cand; break; }
+    {
+        std::vector<std::wstring> dirs;
+        if (!m_dllDirW.empty()) {
+            dirs.push_back(m_dllDirW + L"\\webgpu");
+            dirs.push_back(m_dllDirW);
+        }
+        if (!m_modelDirW.empty()) {
+            dirs.push_back(m_modelDirW + L"\\webgpu");
+            dirs.push_back(m_modelDirW);
+        }
+        for (const std::string& d : dlss5nr::runtimeDirCandidates()) {
+            dirs.push_back(widen(d) + L"\\webgpu");
+            dirs.push_back(widen(d));
+        }
+        for (const auto& d : dirs) {
+            const std::wstring cand = d + L"\\onnxruntime_providers_webgpu.dll";
+            DWORD a = GetFileAttributesW(cand.c_str());
+            if (a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY)) {
+                wgpu = cand;
+                break;
+            }
+        }
     }
     if (wgpu.empty()) {
         printf("[onnxnr] WebGPU plugin EP not found (expected webgpu/"
-               "onnxruntime_providers_webgpu.dll)\n");
+               "onnxruntime_providers_webgpu.dll next to the runtime)\n");
         return false;
     }
 

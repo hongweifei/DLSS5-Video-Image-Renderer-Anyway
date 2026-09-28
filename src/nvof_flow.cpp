@@ -1,4 +1,4 @@
-// NVIDIA hardware optical flow via a dedicated D3D11 device, mirroring Magpie's provider.
+﻿// NVIDIA hardware optical flow via a dedicated D3D11 device, mirroring Magpie's provider.
 // Outputs the sparse flow grid; dense up-sampling to a full-res motion field happens in a D3D12
 // pass on the main pipeline (see densify_pass.h).
 
@@ -14,7 +14,7 @@
 #undef min
 #undef max
 
-#include "nvof/nvOpticalFlowD3D11.h"
+#include "third_party/nvof/nvOpticalFlowD3D11.h"
 #include "d3d12_ctx.h"   // d3dGetRenderAdapter: run NV-OF on the same GPU the render pipeline uses
 
 using Microsoft::WRL::ComPtr;

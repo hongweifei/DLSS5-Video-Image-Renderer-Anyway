@@ -119,24 +119,39 @@ export INCLUDE="$(winpath "$MSVCROOT/include");$(winpath "$WINKIT/Include/$SDKVE
 export LIB="$(winpath "$MSVCROOT/lib/x64");$(winpath "$WINKIT/Lib/$SDKVER/um/x64");$(winpath "$WINKIT/Lib/$SDKVER/ucrt/x64")"
 
 cd "$(dirname "$0")"
+SRCDIR="$(pwd)"
+OUTDIR="$SRCDIR/../build"
+mkdir -p "$OUTDIR"
 
 echo "=== building dlss5nr_engine ==="
 echo "  VS      : $VSROOT"
 echo "  MSVC    : $MSVCVER"
 echo "  SDK     : $SDKVER"
 
-# Under WSL the linker needs the /Fe: output to land on the Windows side; run from the source
-# directory (which is on /mnt/...) and let cl.exe see the relative source names, as before.
+# Under WSL the linker needs the output paths to land on the Windows side; run from the source
+# directory (which is on /mnt/...) and let cl.exe see the relative source names.
 #
 # Sources are globbed so a newly added translation unit builds without editing this script;
-# server_guard.c lives at the repository root and is built separately (it is a plain C file).
+# guard/server_guard.c is plain C and is built separately (see GUARD=1 below).
 SOURCES=$(ls -1 *.cpp | tr '\n' ' ')
 echo "  sources : $SOURCES"
+echo "  output  : $OUTDIR"
+
+# /Fo + /Fe keep every artifact in build/ so the source tree stays clean.
+WINOUT=$(winpath "$OUTDIR")
 
 # shellcheck disable=SC2086
 cl.exe /nologo /O2 /MD /EHa /std:c++17 /W3 \
     $SOURCES \
-    /Fe:dlss5nr_engine.exe \
+    "/Fo$WINOUT\\" "/Fe:$WINOUT/dlss5nr_engine.exe" \
     /link d3d12.lib dxgi.lib d3d11.lib d3dcompiler.lib
 
-echo "=== BUILD OK -> core/dlss5nr_engine.exe ==="
+echo "=== BUILD OK -> build/dlss5nr_engine.exe ==="
+
+# Optional: the console guard (plain C, static CRT so it needs no VC runtime).
+if [ "$GUARD" = "1" ]; then
+    echo "=== building server_guard ==="
+    cl.exe /nologo /O1 /MT /W3 guard/server_guard.c \
+        "/Fo$WINOUT\\" "/Fe:$WINOUT/server_guard.exe"
+    echo "=== BUILD OK -> build/server_guard.exe ==="
+fi

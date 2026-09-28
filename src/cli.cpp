@@ -2,6 +2,7 @@
 
 #include "cli.h"
 
+#include "paths.h"
 #include "util.h"
 #include "meta_io.h"
 
@@ -21,30 +22,15 @@ bool parseFloat(const char* s, float& out) { return s && sscanf(s, "%f", &out) =
 bool parseDouble(const char* s, double& out) { return s && sscanf(s, "%lf", &out) == 1; }
 
 // Directory holding the running executable (no trailing separator).
-std::wstring exeDir() {
-    wchar_t buf[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    std::wstring dir(buf);
-    size_t slash = dir.find_last_of(L"\\/");
-    return slash == std::wstring::npos ? dir : dir.substr(0, slash);
-}
-
 // Makes the bundled portable runtime (tools/ffmpeg.exe, ffprobe.exe, node.exe) reachable.
-// The exe lives in core/ (source build) or the package root, so both <dir>/tools and
-// <dir>/../tools are probed. Doing this before any ffmpeg shell-out means the engine works on a
-// machine with nothing on PATH.
+// findToolsDir() covers both the package layout (tools/ beside the exe) and the source layout
+// (tools/ at the repository root, one level above build/). Doing this before any ffmpeg
+// shell-out means the engine works on a machine with nothing on PATH.
 void prependBundledToolsToPath() {
-    const std::wstring dir = exeDir();
-    std::wstring tools = dir + L"\\tools";
-    if (!std::filesystem::exists(tools + L"\\ffmpeg.exe")) {
-        std::wstring up = dir + L"\\..\\tools";
-        if (std::filesystem::exists(up + L"\\ffmpeg.exe")) tools = up;
-    }
-    if (!std::filesystem::exists(tools + L"\\ffmpeg.exe")) return;
-
-    const char* cur = std::getenv("PATH");
-    std::wstring w = widen(cur ? cur : "");
-    SetEnvironmentVariableW(L"PATH", (tools + L";" + w).c_str());
+    const std::string tools = dlss5nr::findToolsDir();
+    if (tools.empty()) return;
+    const std::string cur = std::getenv("PATH") ? std::getenv("PATH") : "";
+    SetEnvironmentVariableW(L"PATH", (widen(tools + ";" + cur)).c_str());
 }
 
 // True when `encoder` can actually run: it needs an NVIDIA render adapter, and (rare) an ffmpeg

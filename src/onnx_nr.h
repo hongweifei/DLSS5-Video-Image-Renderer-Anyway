@@ -64,7 +64,8 @@ private:
     bool m_ok = false;
     std::string m_err;
     std::string m_provider;
-    std::wstring m_dllDirW;
+    std::wstring m_dllDirW;     // directory holding onnxruntime.dll / DirectML.dll
+    std::wstring m_modelDirW;   // directory holding the .onnx (may carry webgpu/ too)
     bool m_isWebGpu = false;
 
     void* m_ortModule = nullptr;
