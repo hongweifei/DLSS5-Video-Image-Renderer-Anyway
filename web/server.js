@@ -1049,7 +1049,9 @@ async function runImageBatch() {
     b.finishedAt = Date.now();
 }
 
-const server = http.createServer(async (req, res) => {
+// The request handler is a named function so bindServer() can attach it to a throwaway probe
+// server while hunting for a usable port, then keep that same handler on the live server.
+const handler = async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
 
     if (url.pathname === '/api/status' && req.method === 'GET') {
@@ -1850,23 +1852,69 @@ const server = http.createServer(async (req, res) => {
         });
         res.end(data);
     });
-});
+};
 
 // Bind to localhost only: the download/open endpoints serve arbitrary absolute paths now, and a
 // LAN-reachable server must not be able to leak local files.
 const BASE_PORT = Number(PORT) || 8777;
-// Bind on the base port; if a leftover instance still owns it (a very common "网页打不开 /
-// 响应时间过长" cause), step up through the next few ports instead of failing silently.
-function bindServer(port) {
-    server.once('error', (err) => {
-        if (err && err.code === 'EADDRINUSE' && port < BASE_PORT + 40) {
-            console.log('端口 ' + port + ' 被占用（可能是上次没完全退出），自动改用端口 ' + (port + 1));
-            bindServer(port + 1);
+// Bind on the base port; if it cannot be taken, walk a candidate list instead of failing.
+//
+// Two distinct failure codes matter on Windows:
+//   EADDRINUSE - a leftover instance still owns the port (very common: "网页打不开").
+//   EACCES     - the port sits inside an OS-reserved dynamic range. Enabling WSL/Hyper-V makes
+//                Windows reserve whole blocks (e.g. 8729-8828 covers the default 8777), and
+//                nothing in the app can ever bind there. Stepping +1 is useless inside a
+//                reserved block, so the candidate list JUMPS over the block.
+//
+// The candidates keep the familiar 8777 first (most machines are unaffected), then try a span
+// well clear of the typical reserved ranges.
+const PORT_CANDIDATES = (() => {
+    const list = [];
+    const add = (p) => { if (p > 0 && p < 65536 && !list.includes(p)) list.push(p); };
+    add(BASE_PORT);
+    for (let i = 1; i <= 20; i++) add(BASE_PORT + i);   // in case only neighbours are busy
+    // Ports outside the ranges Windows commonly reserves for Hyper-V/WSL (see
+    // `netsh interface ipv4 show excludedportrange protocol=tcp`).
+    for (const p of [9788, 9888, 17999, 18555, 27999, 39876, 45123, 47777]) add(p);
+    for (let p = 48000; p < 48100; p++) add(p);
+    return list;
+})();
+
+// Try each candidate with a THROWAWAY server instance. Reusing one server object across failed
+// listen() calls leaves stale 'error' listeners behind, warns with MaxListenersExceededWarning
+// and lets a later successful bind race with the earlier callbacks - so each attempt gets a
+// fresh instance and the first one that binds is kept.
+function bindServer(attempt) {
+    const idx = attempt || 0;
+    if (idx >= PORT_CANDIDATES.length) {
+        console.error('服务启动失败: 已尝试 ' + PORT_CANDIDATES.length + ' 个端口均不可用。' +
+            '请检查残留进程，或用 PORT=其他端口 指定' +
+            '（netsh interface ipv4 show excludedportrange protocol=tcp 可查看系统保留段）。');
+        process.exit(1);
+    }
+    const port = PORT_CANDIDATES[idx];
+    const probe = http.createServer(handler);
+    probe.once('error', (err) => {
+        const code = err && err.code;
+        if ((code === 'EADDRINUSE' || code === 'EACCES') && idx + 1 < PORT_CANDIDATES.length) {
+            const why = code === 'EACCES'
+                ? '在系统保留的端口段内（启用 WSL/Hyper-V 后常见）'
+                : '被占用（可能是上次没完全退出）';
+            console.log('端口 ' + port + ' ' + why + '，尝试端口 ' + PORT_CANDIDATES[idx + 1]);
+            probe.close(() => bindServer(idx + 1));
         } else {
-            console.error('服务启动失败: ' + (err && err.message) + '。请检查是否有残留的 DLSS5NR/旧版进程占用端口。');
+            console.error('服务启动失败: ' + (err && err.message));
+            process.exit(1);
         }
     });
-    server.listen(port, '127.0.0.1', () => {
+    probe.listen(port, '127.0.0.1', () => {
+        onListening(port);
+    });
+}
+
+// Runs once the socket is live: report the URL, prepare the cache dirs and (for --open) launch
+// the browser. Kept separate from bindServer so the retry loop stays readable.
+function onListening(port) {
         const url = 'http://127.0.0.1:' + port + '/';
         console.log('DLSS5NR 视频渲染服务 v1.5 已启动 — Web 界面: ' + url);
         fs.mkdirSync(OUTPUTS_DIR, { recursive: true });
@@ -1889,6 +1937,6 @@ function bindServer(port) {
                 cleanFrameDirOlder(10 * 60 * 1000);
             }
         }, 15000);
-    });
 }
-bindServer(BASE_PORT);
+
+bindServer(0);
