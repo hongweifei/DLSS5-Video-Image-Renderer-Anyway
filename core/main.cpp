@@ -4,8 +4,14 @@
 // resolution and synthesises detail. Input and output resolutions are therefore identical.
 // A real game feeds depth and per-pixel motion vectors; offline we have neither, so motion comes
 // from NVIDIA hardware optical flow (NV-OF) computed on the decoded frames (--frame-guidance 3),
-// or the motion texture stays all zeros when NV-OF is switched off (Force Zero). Depth is
-// optional: DeepAnything real depth or a Sobel CPU proxy via --depth-interval.
+// a vendor-neutral compute/CPU block-matching fallback (--frame-guidance 4) on any GPU or a
+// pure-CPU box, or the motion texture stays all zeros when guidance is switched off (Force
+// Zero). Depth is optional: DeepAnything real depth or a Sobel CPU proxy via --depth-interval.
+//
+// Hardware support: the whole pipeline (decode -> upload -> compute -> readback -> encode)
+// runs on any D3D12-capable GPU (AMD/Intel/NVIDIA) and falls back to the WARP software
+// renderer when no hardware device exists. Only the DLSS NR model itself (NGX) and NV-OF
+// require an NVIDIA GPU; without one the job still completes, skipping model inference.
 
 #include <windows.h>
 // Windows.h defines min/max macros that clash with std::min/std::max used below.
@@ -38,6 +44,7 @@
 #include "depth_anything.h"
 #include "blend_pass.h"
 #include "densify_pass.h"
+#include "onnx_nr.h"
 #include "meta_io.h"
 
 namespace {
@@ -271,8 +278,9 @@ struct Options {
     double endTime = 0.0;        // decode window end, seconds; 0 = end of file
     bool keepAudio = true;
     bool daemon = false;         // resident mode: keep loaded resources, serve jobs from stdin
-    int frameGuidance = 3;     // 0 = Force Zero (no motion), 3 = NV-OF hardware optical flow
-    int mvecQuality = 2;       // NV-OF engine tier: 0 FAST / 1 MEDIUM / 2 SLOW (default best)
+    int frameGuidance = 3;     // 0 = Force Zero (no motion), 3 = NV-OF hardware optical flow,
+                               // 4 = vendor-neutral optical flow (GPU compute / CPU fallback)
+    int mvecQuality = 2;       // flow engine tier: 0 FAST / 1 MEDIUM / 2 SLOW (default best)
     int depthInterval = 0;     // Update depth-from-color every N frames; 0 = Force Zero
     bool hwDecode = false;     // --hw-decode: NVDEC. Measured no faster than software decode in
                                // this pipeline (data still round-trips to system memory) and it
@@ -283,7 +291,10 @@ struct Options {
     bool perf = false;         // --perf: print per-stage ms/frame breakdown at the end
     int  gpuIdx = -1;          // --gpu-idx <N>: user-chosen DXGI adapter; -1 = auto
     bool listGpus = false;     // --list-gpus: print every adapter and exit
+    bool warp = false;         // --warp: force the WARP software D3D12 device (CPU rendering)
     bool bypassNr = false;     // --bypass-nr: skip DLSS NR inference (diagnostic passthrough)
+    bool onnxNr = false;       // --onnx-nr: force the ONNX DLSS5 reconstruction backend
+    std::string onnxModel;     // --onnx-model <path>: explicit .onnx path for the backend
     std::string png16;         // --png16 <path>: write first frame as a 16-bit PNG (no banding)
     DlssNrSettings nr;
 };
@@ -327,7 +338,14 @@ void usage() {
         "  --bypass-nr          skip the DLSS NR inference (diagnostic: input -> colour/dither\n"
         "                       path only, lets you isolate model artifacts from banding/grid)\n"
         "  --png16 <png>        write the first rendered frame as a 16-bit RGB PNG (65536 levels,\n"
-        "                       no 8-bit quantisation => no colour banding; used by the image path)\n\n"
+        "                       no 8-bit quantisation => no colour banding; used by the image path)\n"
+        "  --gpu-idx <N>        pick the render GPU by index (see --list-gpus)\n"
+        "  --list-gpus          list every render-capable adapter and exit\n"
+        "  --warp               force the WARP software D3D12 device (CPU rendering; automatic\n"
+        "                       fallback when no hardware GPU can be initialised)\n"
+        "  --onnx-nr            force the ONNX DLSS5 reconstruction backend (community re-build\n"
+        "                       with real extracted weights; runs on CPU/any-GPU via DirectML)\n"
+        "  --onnx-model <path>  explicit .onnx path (default: probe models/onnx/*.onnx)\n\n"
         "  Model controls (latched at feature creation):\n"
         "  --preset <0..3>            NR Preset\n"
         "  --intensity <f>            NR Intensity\n"
@@ -338,12 +356,14 @@ void usage() {
         "  --auto-mask <0|1>          Automatic Mask\n"
         "  --ui-correction <0|1>      NR UI Correction\n\n"
         "  Temporal guides:\n"
-        "  --frame-guidance <0|3>    motion source: 0 Force Zero (no motion),\n"
-        "                            3 NVIDIA hardware optical flow (NV-OF).\n"
-        "                            NV-OF needs a supported NVIDIA GPU + driver; if it is\n"
-        "                            requested but unavailable the job fails with an error\n"
-        "                            rather than silently degrading\n"
-        "  --mvec-quality <0|1|2>    NV-OF engine tier: 0 FAST (fastest, noisier flow),\n"
+        "  --frame-guidance <0|3|4>  motion source: 0 Force Zero (no motion),\n"
+        "                            3 NVIDIA hardware optical flow (NV-OF; on a non-NVIDIA\n"
+        "                            device this automatically falls back to 4),\n"
+        "                            4 vendor-neutral optical flow: D3D12 compute on any GPU\n"
+        "                            (AMD/Intel/NVIDIA, incl. WARP) with a CPU matcher fallback.\n"
+        "                            NV-OF (3) needs a supported NVIDIA GPU + driver; the\n"
+        "                            generic flow (4) runs everywhere.\n"
+        "  --mvec-quality <0|1|2>    flow engine tier: 0 FAST (fastest, noisier flow),\n"
         "                            1 MEDIUM, 2 SLOW (default: slowest, most accurate flow).\n"
         "                            Quality mainly shows as flow noise on low-texture areas\n"
         "  --depth-interval <N>       update depth from DepthAnything every N frames\n"
@@ -471,6 +491,58 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
     const UINT W = (UINT)info.width;
     const UINT H = (UINT)info.height;
 
+    // Hardware capability snapshot for this job. The DLSS NR model (NGX) only initialises on
+    // NVIDIA hardware; everywhere else the ONNX reconstruction of the same network (real
+    // weights extracted by the community dlss5-onnx project) runs tile-by-tile on the CPU (or
+    // DirectML when the machine's DML can compile it). The pipeline itself is vendor-neutral
+    // and also runs on WARP / CPU.
+    const unsigned vendorNr = d3dRenderVendor();
+    const bool nvidiaDeviceNr = !d3dIsWarp() && vendorNr == 0x10DE;
+    const bool modelAvailable = nvidiaDeviceNr && !opt.onnxNr;
+    std::unique_ptr<OnnxNr> onnx;
+    if (modelAvailable) {
+        printf("model  : NVIDIA NGX DLSS NR (native)\n");
+    } else {
+        // Probe the ONNX model next to the models/ dir (same probe order as the snippet dlls).
+        std::string model = opt.onnxModel;
+        if (model.empty()) {
+            for (const char* cand : { "models/onnx/dlss5_real_static_256_fp16.onnx",
+                                      "../models/onnx/dlss5_real_static_256_fp16.onnx",
+                                      "models/onnx/dlss5_real_static_256.onnx",
+                                      "../models/onnx/dlss5_real_static_256.onnx" }) {
+                if (std::filesystem::exists(widen(cand))) { model = cand; break; }
+            }
+        }
+        if (!model.empty() && (opt.onnxNr || !opt.bypassNr)) {
+            // dllDir: prefer core/depth next to the exe (source layout), fallback models/onnx.
+            wchar_t exeDirW3[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, exeDirW3, MAX_PATH);
+            std::wstring dir3(exeDirW3);
+            size_t slash3 = dir3.find_last_of(L"\\/");
+            if (slash3 != std::wstring::npos) dir3 = dir3.substr(0, slash3);
+            std::string dllDir;
+            for (const char* cand : { "models/onnx", "core/depth", "depth", "../core/depth" }) {
+                std::string p = std::string(cand) + "/onnxruntime.dll";
+                if (std::filesystem::exists(widen(p))) { dllDir = cand; break; }
+            }
+            onnx = std::make_unique<OnnxNr>();
+            if (onnx->init(dllDir, model, 0)) {
+                printf("model  : DLSS5 ONNX reconstruction (%s provider)\n  %s\n",
+                       onnx->provider(), model.c_str());
+                printf("         static-image tiling mode (256x256 tiles), real extracted weights\n");
+            } else {
+                printf("WARNING: ONNX NR backend unavailable (%s); continuing WITHOUT model\n",
+                       onnx->lastError());
+                onnx.reset();
+            }
+        } else if (!opt.bypassNr) {
+            printf("NOTE  : DLSS NR model requires an NVIDIA GPU (detected vendor=0x%04x%s).\n",
+                   vendorNr, d3dIsWarp() ? ", WARP" : "");
+            printf("        No ONNX reconstruction found (models/onnx/*.onnx) - continuing\n");
+            printf("        WITHOUT model inference; motion/depth guides still computed.\n");
+        }
+    }
+
     const UINT useW = W;
     const UINT useH = H;
     const UINT useRowBytes = useW * 4;
@@ -506,7 +578,7 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
     }
 
     // -------------------------------------------------- forwarder + feature (rebuild on W/H or tuning)
-    if (!st.nrLoaded) {
+    if (modelAvailable && !st.nrLoaded) {
         std::wstring fwPath = widen(opt.forwarder);
         if (!st.nr.load(fwPath.c_str())) {
             printf("ERROR dlssnr: %s\n", st.nr.lastError());
@@ -518,8 +590,9 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
                (st.nr.resolved() & 4) ? 1 : 0, (st.nr.resolved() & 8) ? 1 : 0);
     }
 
-    const bool featChanged = !st.featValid || st.featW != W || st.featH != H ||
-                             !settingsEqual(st.featS, opt.nr);
+    const bool featChanged = modelAvailable &&
+                             (!st.featValid || st.featW != W || st.featH != H ||
+                              !settingsEqual(st.featS, opt.nr));
     if (featChanged) {
         if (st.featValid) st.nr.release();   // frees the old feature handle, DLL stays loaded
         std::wstring snipPath = widen(opt.snippet);
@@ -571,8 +644,9 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
     }
     // GPU finalisation is disabled for --png16 and deep-bit output: the 16F model result must be
     // read back (not quantised to 8-bit on the GPU) so the 16-bit export keeps full precision.
-    const bool useGpuBlend = st.blendInit && st.blendTargets && st.blend.ok() && opt.png16.empty() &&
-                             !deepOut;
+    // The ONNX backend never writes any GPU texture, so the GPU blend pass must stay off too.
+    const bool useGpuBlend = !onnx && st.blendInit && st.blendTargets && st.blend.ok() &&
+                             opt.png16.empty() && !deepOut;
 
     // ---------------------------------------------------------------- io window
     double durationSec = 0.0;
@@ -580,50 +654,82 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
     else if (opt.endTime > 0.0) durationSec = opt.endTime;   // start 0, end N
 
     // ---------------------------------------------------------------- motion/depth guides
-    // NV-OF and DepthAnything keep per-job state (previous frame / depth cache), so a fresh
-    // instance is built for every job that uses them; the size is always the working resolution.
-    bool useNvof = (opt.frameGuidance == 3);
+    // The flow backend keeps per-job state (previous frame), so a fresh instance is built for
+    // every job that uses it; the size is always the working resolution.
+    //   frameGuidance 3 -> NV-OF hardware optical flow (NVIDIA only; hard error when missing)
+    //   frameGuidance 4 -> vendor-neutral flow: D3D12 compute on any GPU (incl. WARP), or the
+    //                      CPU matcher when even WARP is unavailable
+    // Automatic degradation: when guidance 3 is requested on a non-NVIDIA (or WARP) device the
+    // job transparently switches to backend 4 instead of failing, so --frame-guidance 3 stays
+    // the portable "best motion" default on every machine.
+    bool useFlow = false;
+    std::string flowName;
     bool useRealDepth = false;
-    std::unique_ptr<NvofMotion> nvof;
+    std::unique_ptr<IFlow> flow;
     std::unique_ptr<DepthAnything> depthModel;
-    if (useNvof) {
-        nvof = std::make_unique<NvofMotion>();
-        nvof->setQuality(opt.mvecQuality);
-        if (!nvof->init(useW, useH)) {
-            const char* e = nvof->lastError();
-            printf("ERROR: NV-OF requested (--frame-guidance 3) but unavailable (%s).\n", e);
-            // Give an actionable hint: the two most common causes are the GPU defaulting to an
-            // iGPU/virtual display (fixed by the render-GPU selection or Windows GPU preference)
-            // and a driver build that ships without the optical-flow component.
-            if (strstr(e, "D3D11CreateDevice failed") || strstr(e, "nvCreateOpticalFlowD3D11 failed") ||
-                strstr(e, "nvOFInit failed") || strstr(e, "INVALID_DEVICE") || strstr(e, "ERR_DEVICE")) {
-                printf("  HINT: the optical-flow device could not be created on the NVIDIA GPU.\n");
-                printf("  - Hybrid-GPU laptop? In Windows: Settings > System > Display > Graphics,\n");
-                printf("    add core\\dlss5nr_engine.exe and choose High performance.\n");
-                printf("  - Or pick your NVIDIA card in the web UI's \"渲染显卡\" dropdown.\n");
-                printf("  - Also confirm the NVIDIA driver is the latest Game Ready/Studio build.\n");
-            } else if (strstr(e, "nvofapi64.dll unavailable") || strstr(e, "not found")) {
-                printf("  HINT: the NVIDIA optical-flow API (nvofapi64.dll) is missing.\n");
-                printf("  Update to the latest NVIDIA driver; on Windows 11 check Settings >\n");
-                printf("  Windows Update > Advanced > Optional updates for driver updates.\n");
+    const unsigned vendorFlow = d3dRenderVendor();
+    const bool nvidiaDeviceFlow = !d3dIsWarp() && vendorFlow == 0x10DE;
+    // Motion vectors are only consumed by the native NGX model. The ONNX reconstruction is a
+    // static-image rebuild (motion tensors hard-zeroed inside), so skip all flow work whenever
+    // NGX is not the active model - it would burn ~50% of the frame time for nothing.
+    if (opt.frameGuidance == 3 && modelAvailable) {
+        if (nvidiaDeviceFlow) {
+            auto nvof = std::make_unique<NvofMotion>();
+            nvof->setQuality(opt.mvecQuality);
+            if (nvof->init(useW, useH)) {
+                flow = std::move(nvof);
+                flowName = "NVIDIA hardware optical flow (NV-OF)";
+                useFlow = true;
             } else {
-                printf("  HINT: if the driver is up to date, report this error text when asking\n");
-                printf("        for help. Meanwhile you can turn optical flow OFF and still render\n");
-                printf("        (motion vectors will be zeroed).\n");
+                const char* e = nvof->lastError();
+                printf("WARNING: NV-OF unavailable (%s); falling back to generic optical flow\n",
+                       e);
+                printf("  HINT: update the NVIDIA driver to the latest Game Ready/Studio build;\n");
+                printf("        the flow component (nvofapi64.dll) ships with the driver.\n");
             }
-            printf("  You can also re-run with --frame-guidance 0 (Force Zero motion).\n");
-            return 1;
+        } else {
+            printf("NOTE: NVIDIA optical flow needs an NVIDIA GPU (vendor=0x%04x%s); using the\n",
+                   vendorFlow, d3dIsWarp() ? ", WARP" : "");
+            printf("      vendor-neutral optical flow instead (--frame-guidance 4).\n");
+            // Backend 4: GPU compute first (any vendor, incl. WARP), CPU matcher as the last
+            // resort so even a box without D3D12 keeps producing real motion vectors.
+            auto gpuF = std::make_unique<GpuFlow>();
+            gpuF->setQuality(opt.mvecQuality);
+            if (gpuF->init(useW, useH)) {
+                flow = std::move(gpuF);
+                flowName = d3dIsWarp() ? "generic optical flow (WARP compute)"
+                                       : "generic optical flow (GPU compute)";
+                useFlow = true;
+            } else {
+                printf("NOTE: GPU flow unavailable (%s); using the CPU block-matching flow\n",
+                       gpuF->lastError());
+                auto cpuF = std::make_unique<CpuFlow>();
+                cpuF->setQuality(opt.mvecQuality);
+                if (cpuF->init(useW, useH)) {
+                    flow = std::move(cpuF);
+                    flowName = "generic optical flow (CPU block matching)";
+                    useFlow = true;
+                } else {
+                    printf("ERROR: no optical flow backend available (%s); rerun with "
+                           "--frame-guidance 0 to render without motion vectors\n",
+                           cpuF->lastError());
+                    return 1;
+                }
+            }
         }
-        printf("NVOF initialized: grid=%upx, motion source = hardware optical flow\n",
-               nvof->gridSize());
-        // The sparse grid texture + densify binding follow the job's NV-OF session (grid dims
-        // only change with the working resolution / driver grid caps, so cache the creation).
+    } else if (opt.frameGuidance == 3) {
+        printf("NOTE  : motion vectors are skipped - the active model does not consume them.\n");
+    }
+    if (useFlow) {
+        const uint32_t gw = flow->gridWidth();
+        const uint32_t gh = flow->gridHeight();
+        printf("flow    : %s, grid=%upx\n", flowName.c_str(), flow->gridSize());
+        // The sparse grid texture + densify binding follow the job's flow session (grid dims
+        // only change with the working resolution / backend grid caps, so cache the creation).
         if (!st.densifyInit) {
-            printf("ERROR: GPU motion densify unavailable; cannot densify the NV-OF grid\n");
+            printf("ERROR: GPU motion densify unavailable; cannot densify the flow grid\n");
             return 1;
         }
-        const uint32_t gw = nvof->gridWidth();
-        const uint32_t gh = nvof->gridHeight();
         if (!st.texGrid || st.gridTexW != gw || st.gridTexH != gh) {
             st.texGrid = st.ctx.createTex(gw, gh, DXGI_FORMAT_R16G16_SINT, true, L"nr_grid");
             st.gridTexW = gw;
@@ -636,14 +742,14 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
         }
         if (!st.densifyTargets) {
             if (!st.densify.setTargets(st.ctx.dev(), st.texGrid.Get(), st.texMvec.Get(), useW,
-                                       useH, nvof->gridSize())) {
+                                       useH, flow->gridSize())) {
                 printf("ERROR: densify setTargets failed\n");
                 return 1;
             }
             st.densifyTargets = true;
         }
     }
-    if (opt.depthInterval > 0) {
+    if (opt.depthInterval > 0 && modelAvailable) {
         wchar_t exeDirW[MAX_PATH] = {};
         GetModuleFileNameW(nullptr, exeDirW, MAX_PATH);
         std::wstring dirW(exeDirW);
@@ -673,10 +779,10 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
     std::vector<uint16_t> out16;                                       // rgba64le for 10/12-bit
     if (deepOut) out16.resize((size_t)useW * useH * 4);
     const size_t frameBytes = (size_t)useRowBytes * useH;
-    // NV-OF now hands over only the sparse flow grid (gridW*gridH*4 bytes), which the D3D12
-    // densify pass up-samples to the full-res motion field; the 8MB motion buffer is gone.
+    // NV-OF/generic flow hands over only the sparse flow grid (gridW*gridH*4 bytes), which the
+    // D3D12 densify pass up-samples to the full-res motion field; the 8MB motion buffer is gone.
     const size_t mvecBytes =
-        useNvof ? (size_t)nvof->gridWidth() * nvof->gridHeight() * 4 : 0;
+        useFlow ? (size_t)flow->gridWidth() * flow->gridHeight() * 4 : 0;
     std::vector<uint8_t> depthData((size_t)useW * 4 * useH);
 
     struct FrameSlot {
@@ -690,7 +796,7 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
     std::array<FrameSlot, 2> slots;
     for (int i = 0; i < kSlots; ++i) {
         slots[i].rgba.resize(frameBytes);
-        if (useNvof) slots[i].mvec.resize(mvecBytes);
+        if (useFlow) slots[i].mvec.resize(mvecBytes);
     }
 
     DepthBuffer depthBuffer;
@@ -825,11 +931,11 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
                 notifyAll();
                 return;
             }
-            if (useNvof) {
+            if (useFlow) {
                 auto tA = T();
-                if (!nvof->feed(slots[s].rgba.data(), slots[s].mvec.data())) {
-                    printf("ERROR: NVOF feed failed at frame %lld (%s)\n", made,
-                           nvof->lastError());
+                if (!flow->feed(slots[s].rgba.data(), slots[s].mvec.data())) {
+                    printf("ERROR: flow feed failed at frame %lld (%s)\n", made,
+                           flow->lastError());
                     decodeStop.store(true);
                     eof.store(true);
                     prodError.store(true);
@@ -898,9 +1004,12 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
         }
 
         // ------------------------------------------------------------- depth guidance
-        const bool depthChanged = opt.depthInterval > 0 && (done % opt.depthInterval == 0);
+        // Depth only feeds the model; with the model unavailable it is skipped entirely
+        // (the Sobel/DepthAnything computation would be wasted work every frame).
+        const bool depthChanged = opt.depthInterval > 0 && modelAvailable &&
+                                  (done % opt.depthInterval == 0);
         auto tC = T();
-        if (useRealDepth) {
+        if (useRealDepth && modelAvailable) {
             if (!depthModel->feed(inP, realDepth.data())) {
                 printf("ERROR: depth inference failed at frame %lld (%s)\n", done,
                        depthModel->lastError());
@@ -915,7 +1024,7 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
                     break;
                 }
             }
-        } else if (opt.depthInterval > 0) {
+        } else if (opt.depthInterval > 0 && modelAvailable) {
             updateDepth(inP, (int)useW, (int)useH, opt.depthInterval, depthBuffer);
             if (depthChanged) {
                 memcpy(depthData.data(), depthBuffer.depth.data(), depthData.size());
@@ -931,12 +1040,14 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
 
         // ------------------------------------------------------------- uploads (grid + color)
         // Both textures go in one command list: one GPU submit per frame for the colour frame
-        // and the small sparse NV-OF grid (each submit previously drained the GPU and paid a
+        // and the small sparse flow grid (each submit previously drained the GPU and paid a
         // fixed cost). The densify pass turns the grid into the full-res texMvec later.
+        // The ONNX backend never touches GPU textures, so its upload is skipped entirely.
         auto tE = T();
-        if (useNvof) {
+        if (!onnx) {
+        if (useFlow) {
             D3D12Ctx::UploadItem grid{st.texGrid.Get(), slots[s].mvec.data(),
-                                      nvof->gridWidth() * 4, nvof->gridHeight()};
+                                      flow->gridWidth() * 4, flow->gridHeight()};
             D3D12Ctx::UploadItem color{st.texColor.Get(), inP, useRowBytes};
             if (!st.ctx.uploadTexN({grid, color}, useH)) {
                 printf("ERROR: upload failed at frame %lld\n", done);
@@ -951,45 +1062,95 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
                 break;
             }
         }
+        }
         auto tF = T();
         addNs(perf.upColor, tE, tF);
 
         // ------------------------------------------------------------- densify + evaluate + blend
         int result = 0;
         auto tG = T();
+        if (onnx) {
+            // ONNX reconstruction path: inference on the CPU-side frame, residual blend on the
+            // CPU (same math as finalizeToRgba8), no GPU model involvement at all.
+            std::vector<uint8_t> onnxOut((size_t)useW * useH * 4);
+            if (!onnx->feed(inP, onnxOut.data(), useW, useH)) {
+                printf("ERROR: onnxnr failed at frame %lld (%s)\n", done, onnx->lastError());
+                stopped = true;
+                break;
+            }
+            // residual blend model vs input, straight into the encoder buffer
+            const float m = std::min(std::max(opt.residualMult, 0.f), 2.f);
+            const float inW = 1.f - m;
+            for (size_t i = 0; i < (size_t)useW * useH * 4; i += 4) {
+                for (int c = 0; c < 3; ++c) {
+                    float v = inW * (float)inP[i + c] + m * (float)onnxOut[i + c];
+                    if (v < 0.f) v = 0.f; else if (v > 255.f) v = 255.f;
+                    outBuf[i + c] = (uint8_t)(v + 0.5f);
+                }
+                outBuf[i + 3] = 255;
+            }
+            if (deepOut) {
+                // 10/12-bit output: expand the blended 8-bit result to 16-bit per channel
+                // (rgba64le) so the deep encoder path gets a correctly-sized buffer.
+                for (size_t i = 0, j = 0; i < (size_t)useW * useH * 4; i += 4, j += 4) {
+                    out16[j + 0] = (uint16_t)(outBuf[i + 0] * 257);
+                    out16[j + 1] = (uint16_t)(outBuf[i + 1] * 257);
+                    out16[j + 2] = (uint16_t)(outBuf[i + 2] * 257);
+                    out16[j + 3] = 65535;
+                }
+            }
+            if (done == 0 && !opt.png16.empty()) {
+                std::vector<uint16_t> rgba16((size_t)useW * useH * 4);
+                for (size_t i = 0, j = 0; i < (size_t)useW * useH * 4; i += 4, j += 4) {
+                    rgba16[j + 0] = (uint16_t)(outBuf[i + 0] * 257);
+                    rgba16[j + 1] = (uint16_t)(outBuf[i + 1] * 257);
+                    rgba16[j + 2] = (uint16_t)(outBuf[i + 2] * 257);
+                    rgba16[j + 3] = 65535;
+                }
+                if (writePng16(opt.png16, useW, useH, rgba16.data())) {
+                    printf("wrote 16-bit PNG -> %s\n", opt.png16.c_str());
+                    injectMetaFile(opt.png16, makeMetaPayload(serializeRenderMeta(opt)));
+                }
+            }
+            result = 1;
+        } else {
         bool ok = st.ctx.execSync(
             [&](ID3D12GraphicsCommandList* cmd) {
-                if (opt.bypassNr) {
-                    // Diagnostic passthrough: skip DLSS NR (and its motion densify) entirely,
-                    // still run the final colour path (residual 0 => pure input + dither), so
-                    // banding / grid can be attributed to the model vs the colour pipeline.
+                if (opt.bypassNr || !modelAvailable) {
+                    // Diagnostic passthrough (--bypass-nr) or no NVIDIA model available:
+                    // skip DLSS NR (and its motion densify is still fine to run for
+                    // diagnostics, but with the model gone there is nothing to guide, so
+                    // skip it too). The final colour path (residual 0 => pure input + dither)
+                    // still runs so the output stays a valid, watchable video.
                     result = 1;
                 } else {
-                    if (useNvof) st.densify.record(cmd);   // sparse grid -> full-res texMvec
+                    if (useFlow) st.densify.record(cmd);   // sparse grid -> full-res texMvec
                     result = st.nr.evaluate(cmd, st.params.ptr(), st.texColor.Get(),
                                             st.texDepth.Get(), st.texMvec.Get(),
                                             st.texOutput.Get(), useW, useH, useW, useH, opt.nr,
                                             opt.frameReset || done == 0);
                 }
-                if (useGpuBlend) st.blend.record(cmd, opt.bypassNr ? 0.0f : opt.residualMult);
+                if (useGpuBlend) st.blend.record(cmd, (opt.bypassNr || !modelAvailable) ? 0.0f
+                                                                                        : opt.residualMult);
             },
             "densify+evaluate+blend");
-        auto tH = T();
-        if (!opt.bypassNr) addNs(perf.evaluate, tG, tH);
         if (!ok || result != 1) {
             printf("ERROR: evaluate returned 0x%08X at frame %lld\n", (unsigned)result, done);
             stopped = true;
             break;
         }
+        }
+        auto tH = T();
+        if (!opt.bypassNr && (modelAvailable || onnx)) addNs(perf.evaluate, tG, tH);
 
         // ------------------------------------------------------------- download to CPU
         auto tI = T();
-        bool dlOk;
+        bool dlOk = true;
         if (useGpuBlend) {
             // 8-bit final texture: residual blend + dither already ran on the GPU. texOutput
             // (16F) is never read back any more.
             dlOk = st.ctx.downloadTex(st.texFinal.Get(), outBuf.data(), useRowBytes, useH);
-        } else {
+        } else if (!onnx) {
             dlOk = st.ctx.downloadTex(st.texOutput.Get(), outF16.data(), useW * 8, useH);
         }
         if (!dlOk) {
@@ -1002,7 +1163,7 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
 
         // ------------------------------------------------------------- finalise (8-bit or deep)
         auto tK = T();
-        if (!useGpuBlend) {
+        if (!useGpuBlend && !onnx) {
             if (deepOut) {
                 // 10/12-bit: keep the residual-blended result at 16-bit per channel (0..65535,
                 // no dither needed) so the encoder quantises to its own 10/12 bits.
@@ -1014,7 +1175,7 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
                                 (uint32_t)useH, opt.residualMult);
             }
         }
-        if (!useGpuBlend && done == 0 && !opt.png16.empty()) {
+        if (!useGpuBlend && !onnx && done == 0 && !opt.png16.empty()) {
             // 16-bit first-frame export: full 16F precision, no 8-bit quantisation at all.
             std::vector<uint16_t> rgba16((size_t)useW * useH * 4);
             finalize16(inP, outF16.data(), rgba16.data(), (uint32_t)useW, (uint32_t)useH,
@@ -1195,6 +1356,8 @@ int wmain(int argc, wchar_t** argv) {
         if (flag == "--daemon") opt.daemon = true;
         else if (flag == "--perf") opt.perf = true;
         else if (flag == "--list-gpus") opt.listGpus = true;
+        else if (flag == "--warp") opt.warp = true;
+        else if (flag == "--onnx-nr") opt.onnxNr = true;
     }
 
     // Standalone metadata stamping: dlss5nr_engine --meta-inject out.png --meta-json '{"v":1,...}'
@@ -1258,6 +1421,9 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == "--mvec-quality") parseInt(v.c_str(), opt.mvecQuality);
         else if (a == "--depth-interval") parseInt(v.c_str(), opt.depthInterval);
         else if (a == "--gpu-idx") parseInt(v.c_str(), opt.gpuIdx);
+        else if (a == "--warp") { opt.warp = true; --i; }
+        else if (a == "--onnx-nr") { opt.onnxNr = true; --i; }
+        else if (a == "--onnx-model") opt.onnxModel = v;
         else if (a == "--perf") { opt.perf = true; --i; }
     }
 
@@ -1268,6 +1434,7 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
     if (opt.gpuIdx >= 0) d3dSetAdapter(opt.gpuIdx);
+    if (opt.warp) d3dUseWarp(true);
 
     // Single-shot CLI mode or resident daemon (--daemon). Both share DaemonState so a
     // --daemon process keeps every heavy resource (D3D12, model feature, snippet DLL) loaded
@@ -1275,6 +1442,64 @@ int wmain(int argc, wchar_t** argv) {
     if (opt.daemon) {
         DaemonState st;
         return runDaemon(st);
+    }
+
+    // Encoder availability fallback: the *_nvenc hardware encoders need an NVIDIA GPU at
+    // runtime (ffmpeg loads nvcuda.dll lazily; `ffmpeg -encoders` lists nvenc even on machines
+    // without the driver, so the list alone cannot decide). Gate on the render adapter vendor
+    // instead: on a non-NVIDIA device (AMD/Intel/WARP) downgrade NVENC -> libx264/libx265 so
+    // the job renders successfully instead of failing when the encoder opens.
+    {
+        // tools/ ships with the release package; also probe ../tools so a bare repo checkout
+        // works without adding anything to PATH (same probe order the engine build uses).
+        wchar_t exeDirW2[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exeDirW2, MAX_PATH);
+        std::wstring dir2(exeDirW2);
+        size_t slash2 = dir2.find_last_of(L"\\/");
+        if (slash2 != std::wstring::npos) dir2 = dir2.substr(0, slash2);
+        // exe lives in core/ (source build) or the package root: check <dir>/tools and
+        // <dir>/../tools.
+        std::wstring tools2 = dir2 + L"\\tools";
+        if (!std::filesystem::exists(tools2 + L"\\ffmpeg.exe")) {
+            std::wstring up = dir2 + L"\\..\\tools";
+            if (std::filesystem::exists(up + L"\\ffmpeg.exe")) tools2 = up;
+        }
+        if (std::filesystem::exists(tools2 + L"\\ffmpeg.exe")) {
+            std::string pathA = std::getenv("PATH") ? std::getenv("PATH") : "";
+            int pn = MultiByteToWideChar(CP_UTF8, 0, pathA.c_str(), -1, nullptr, 0);
+            std::wstring pathW((size_t)std::max(pn, 1), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, pathA.c_str(), -1, &pathW[0], pn);
+            SetEnvironmentVariableW(L"PATH", (tools2 + L";" + pathW).c_str());
+        }
+
+        if (opt.encoder.find("nvenc") != std::string::npos) {
+            const bool nvidiaGpu = !d3dIsWarp() && d3dRenderVendor() == 0x10DE;
+            bool have = nvidiaGpu;
+            if (have) {
+                // Double-check a (rare) ffmpeg build compiled without NVENC support.
+                std::string encList;
+                FILE* p = _wpopen(L"ffmpeg -hide_banner -encoders 2>nul", L"r");
+                if (p) {
+                    char buf[512];
+                    while (fgets(buf, sizeof(buf), p)) encList += buf;
+                    _pclose(p);
+                }
+                if (!encList.empty() && encList.find(opt.encoder) == std::string::npos)
+                    have = false;
+            }
+            if (!have) {
+                const bool hevc = opt.encoder.find("hevc") != std::string::npos;
+                const std::string alt = hevc ? "libx265" : "libx264";
+                printf("NOTE  : encoder %s needs an NVIDIA GPU; using %s instead\n",
+                       opt.encoder.c_str(), alt.c_str());
+                opt.encoder = alt;
+                // libx264 default quality: replace the NVENC -rc/-cq tail with a CRF value.
+                if (opt.extraArgs.find("-crf") == std::string::npos &&
+                    opt.extraArgs.find("-qp") == std::string::npos) {
+                    opt.extraArgs += hevc ? " -crf 20 -preset medium" : " -crf 18 -preset medium";
+                }
+            }
+        }
     }
 
     // 10-bit encoder aliases: *_10bit map to the base encoder + a 10-bit pixel format
@@ -1296,6 +1521,34 @@ int wmain(int argc, wchar_t** argv) {
         if (opt.pixFmt == "yuv420p") opt.pixFmt = "yuv420p10le";
         if (opt.extraArgs.find("-profile:v") == std::string::npos)
             opt.extraArgs += " -rc vbr -cq 14 -b:v 0 -profile:v main10";
+    }
+
+    // The alias above can re-select NVENC after the availability fallback ran; re-check the
+    // same way (vendor gate + encoder list).
+    if (opt.encoder.find("nvenc") != std::string::npos) {
+        bool have2 = !d3dIsWarp() && d3dRenderVendor() == 0x10DE;
+        if (have2) {
+            std::string encList2;
+            FILE* p2 = _wpopen(L"ffmpeg -hide_banner -encoders 2>nul", L"r");
+            if (p2) {
+                char buf2[512];
+                while (fgets(buf2, sizeof(buf2), p2)) encList2 += buf2;
+                _pclose(p2);
+            }
+            if (!encList2.empty() && encList2.find(opt.encoder) == std::string::npos)
+                have2 = false;
+        }
+        if (!have2) {
+            printf("NOTE  : encoder %s needs an NVIDIA GPU; using libx265/libx264 fallback\n",
+                   opt.encoder.c_str());
+            const bool hevc2 = opt.encoder.find("hevc") != std::string::npos;
+            opt.encoder = hevc2 ? "libx265" : "libx264";
+            if (opt.extraArgs.find("-crf") == std::string::npos &&
+                opt.extraArgs.find("-cq") == std::string::npos &&
+                opt.extraArgs.find("-qp") == std::string::npos) {
+                opt.extraArgs += hevc2 ? " -crf 14 -preset medium" : " -crf 16 -preset medium";
+            }
+        }
     }
 
     if (opt.input.empty()) {

@@ -403,10 +403,10 @@
         <span>Optical Flow Motion</span>
         <div class="check-row" style="margin-top:2px;">
           <input type="checkbox" id="flowEnable" checked>
-          <label for="flowEnable">Enable hardware NV-OF motion vectors</label>
+          <label for="flowEnable">启用光流运动矢量（仅 N 卡 NGX 路径消耗；ONNX 后端自动跳过）</label>
         </div>
-        <label class="field" style="margin-top:4px;" title="NV-OF 引擎质量档位。SLOW = 最慢但光流最准（默认）；FAST 提速但低纹理区噪声更明显。离线渲染建议 SLOW">
-          <span>NV-OF 质量档位</span>
+        <label class="field" style="margin-top:4px;" title="光流引擎质量档位。SLOW = 最慢但光流最准（默认）；FAST 提速但低纹理区噪声更明显。离线渲染建议 SLOW">
+          <span>光流质量档位</span>
           <select id="mvecQuality">
             <option value="2" selected>SLOW（最准，推荐）</option>
             <option value="1">MEDIUM</option>
@@ -462,11 +462,11 @@
       <div style="display:grid; grid-template-columns:150px minmax(300px,350px); gap:12px; align-items:end;">
         <label class="field">
           <span>导出编码器</span>
-          <select id="encoder" style="width:100%;" title="点击展开查看全部编码器说明">
-            <option value="h264_nvenc">h264_nvenc · 8bit（最快、最兼容）</option>
-            <option value="hevc_nvenc">hevc_nvenc · 8bit（小体积、需较新播放器）</option>
-            <option value="libx264">libx264 · 8bit（软编、画质高、慢）</option>
-            <option value="libx265">libx265 · 8bit（体积最小、CPU 慢）</option>
+          <select id="encoder" style="width:100%;" title="点击展开查看全部编码器说明。选 NVENC 需要 NVIDIA 显卡；其他显卡/CPU 会自动回退到软编码器">
+            <option value="h264_nvenc">h264_nvenc · 8bit（N卡硬编，最快；无N卡自动回退 libx264）</option>
+            <option value="hevc_nvenc">hevc_nvenc · 8bit（N卡硬编，小体积；无N卡自动回退 libx265）</option>
+            <option value="libx264">libx264 · 8bit（CPU 软编、画质高、慢）</option>
+            <option value="libx265">libx265 · 8bit（CPU 软编、体积最小、最慢）</option>
           </select>
         </label>
         <label class="field">
@@ -479,7 +479,7 @@
       </div>
       <label class="field" style="margin-top:2px; max-width:360px;">
         <span>渲染显卡</span>
-        <select id="gpuSel" style="width:100%;" title="选择渲染显卡。多条目同名=虚拟显示驱动注册所致，任选一条均可；混合显卡笔记本请选 NVIDIA 独显">
+        <select id="gpuSel" style="width:100%;" title="选择渲染显卡。NVIDIA 走 NGX 原生推理（最快）；AMD/Intel/无独显机器自动使用 ONNX 重建模型，神经增强同样生效。混合显卡笔记本有 N 卡时选 NVIDIA 独显">
           <option value="-1">自动（默认）</option>
         </select>
       </label>
