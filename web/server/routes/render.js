@@ -68,7 +68,10 @@ module.exports = [
             args.push('--dump-frame', ppmPath);
             // 16-bit first-frame export for the rendered preview: same trick as the image
             // module, so the compare view never shows the 8-bit Bayer dither grid.
-            const renderedPath = path.join(FRAME_DIR, `rendered_${ts}.png`);
+            // NOTE: this must stay `let`. --png16 is always passed, so a working engine writes
+            // rendered16 and the fallback branch below reassigns this variable. As `const` that
+            // reassignment threw "Assignment to constant variable" on every success path.
+            let renderedPath = path.join(FRAME_DIR, `rendered_${ts}.png`);
             const rendered16 = path.join(FRAME_DIR, `rendered_${ts}_16.png`);
             args.push('--png16', rendered16);
             const exe = findEngine();
