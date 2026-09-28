@@ -164,17 +164,30 @@ models/                     NR 模型与转发器（N 卡路径）
 models/onnx/                ONNX 重建模型权重（非 N 卡路径）
 tools/                      便携 node/ffmpeg/ffprobe
 web/                        浏览器界面 + 本地服务（node，无第三方依赖、无构建步骤）
-  index.html                页面外壳：仅结构（约 370 行）
-  css/app.css               设计令牌 + 布局 + 组件（按钮/输入/滑杆/状态/日志/弹层）
-  css/overlays.css          固定定位浮层（视频对比放大视图、电源按钮）
-  js/overlays-compare.js    视频对比播放器（自包含 IIFE）
-  js/app-core.js            基础：DOM 助手、应用根路径、滑杆绑定、输入与拖放
-  js/app-status.js          日志面板、状态轮询、任务配置构建
-  js/app-range.js           时间范围与「快速渲染当前帧」对比预览
+  index.html                页面外壳：顶部模式切换 + 左参数栏 + 底部操作栏 + 浮层（约 500 行）
+  css/tokens.css            设计令牌唯一来源：浅色 :root / 深色 [data-theme="dark"]
+  css/app.css               布局与组件（头部/标签页/参数栏/卡片/控件/进度/队列/底栏）
+  css/overlays.css          脱离文档流的层：对比视图、图片放大、日志抽屉、提示条、拖放层、确认框
+  js/app-shell.js           交互外壳：主题、模式切换、提示条、忙碌态、统一键盘、拖放、底栏
+  js/overlays-compare.js    视频对比播放器（自包含 IIFE，向 app-shell 暴露 setZoom/setSplit）
+  js/app-core.js            基础：DOM 助手、滑杆绑定、输入视频载入、拖入文件的接收
+  js/app-status.js          日志面板、状态轮询、任务提交与取消、任务配置构建
+  js/app-range.js           时间范围与「渲染当前帧并对比」（单帧渲染的总互斥标志也在这里）
   js/app-image.js           图片渲染、图片批量渲染与对比视图
   js/app-video-batch.js     视频批量渲染与显卡列表加载
   js/app-params.js          参数持久化、渲染参数恢复、撤销/重做、命名预设
-  js/app-shortcuts.js       键盘快捷键（Ctrl+Enter 开始 / Esc 停止）
+
+  前端约定（改动前请先读）：
+    · 8 个 js 文件用 <script src> 顺序加载、**共享同一个全局作用域**（不是 ES module）。
+      顶层用 const/let 声明重名会直接 SyntaxError；新增模块请包在 IIFE 里，
+      只把需要的接口挂到 window（app-shell.js 就是这么做的）。
+    · DOM 契约：JS 通过 id 取元素，index.html 必须保留这些 id。
+      `node tools/verify-web.js .` 会逐个核对（当前 115 个引用）。
+    · 主题色只能在 tokens.css 里定义，组件只引用 var(--…)。未定义的自定义属性会让
+      整条声明失效，效果是"样式静默消失"，`tools/audit-css-tokens.js` 专门盯这个。
+    · 全局键盘只有一个入口（app-shell.js，采集阶段 + 明确优先级）。不要再往
+      document 上挂 keydown，否则会重新出现"按 Esc 关弹层的同时把渲染也停了"。
+
   server.js                 本地服务入口：端口选择/绑定、空闲清理（约 120 行）
   server/                   服务端模块（CommonJS，无第三方依赖、无构建步骤）
     paths.js                全部磁盘位置解析（WEB_DIR/ROOT/models/outputs/临时目录）+ 输出路径
@@ -202,11 +215,32 @@ tools/                      便携 node/ffmpeg/ffprobe + 校验脚本（本目�
   verify-static.js          校验：静态资源路径与 MIME（复现 routes/static.js 的解析逻辑）
   audit-css-tokens.js       校验：所有 var(--x) 都有定义
   verify-server.js          校验：服务端语法、29 个路由、原声明清点、共享状态引用方式
+  verify-live.js            校验：起服务后页面与全部资源 200、字节与磁盘一致、接口字段齐全
+  audit-html.js             校验：重复属性/重复 id、CSS 里混入 HTML 标签、alt/按钮名/表单标签
+  audit-theme.js            校验：两套主题令牌一致 + 全部前景/背景组合的 WCAG AA 对比度
   server-probe.js           校验：真实 HTTP 打全部路由（`--render` 含真实 ONNX 推理）
-  server-queue-test.js      校验：队列端到端（排队/重排/取消让位/多趟/导出/批量）
+  server-queue-test.js      校验：队列端到端（排队/重排/取消让位/多趟/日志协议/导出/批量）
   make-test-media.js        生成上面两个脚本用的 320x240 测试素材
 start_ui.bat                启动脚本（双击运行）
 ```
+
+> **前端改完请跑这几条**（都在项目根执行，`tools/` 不入库，克隆后需自行准备）：
+>
+> ```bash
+> node tools/verify-web.js .          # JS 语法 + 全局作用域 + 115 个 id 的 DOM 契约
+> node tools/verify-static.js .       # 静态资源路径与 MIME
+> node tools/audit-html.js            # 重复属性/id、CSS 混入 HTML、可访问性
+> node tools/audit-theme.js           # 主题令牌一致性 + WCAG AA 对比度
+> node tools/audit-css-tokens.js .    # 所有 var(--x) 都有定义
+> # 起服务后再跑：
+> node tools/verify-live.js http://127.0.0.1:9788
+> ```
+>
+> `audit-html.js` 与 `audit-theme.js` 这两条不是走过场：它们对应的正是本项目实际踩过的坑
+> —— 同一元素写两个 `class`（第二个被浏览器忽略，`input-compact` / `mt-10` / `btn-xs`
+> 全都没生效）、CSS 里混进 `<style>` 标签（导致紧跟其后的整条规则被丢弃，`.vd-zoom`、
+> `.vcompare`、`#exitWrap` 三条定义静默失效）、未定义的自定义属性（5 条分隔线消失）。
+> 这些在浏览器里都不会报错，只能靠机器检查。
 
 > **布局说明**：`src/build.ps1` 把产物写进 `build/`；引擎按**可执行文件所在目录**向上
 > 探测 `models/`、`runtime/`、`tools/`，因此开发者（exe 在 `build/`）与发行包（exe 在根）

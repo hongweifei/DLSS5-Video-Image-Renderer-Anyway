@@ -1,401 +1,646 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <!-- 页面外壳：结构在这里，样式在 css/、脚本在 js/（拆分见 tools/split-web.js） -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DLSS5NR 视频渲染 v1.5</title>
-  <link rel="stylesheet" href="css/app.css">
-  <link rel="stylesheet" href="css/overlays.css">
+<!-- 主题必须在首次绘制前定好，否则深色用户会先看到一帧白色。
+     放在样式表之前执行是这里唯一合理的做法。 -->
+<script>
+(function () {
+  var t;
+  try { t = localStorage.getItem('dlss5nr.theme'); } catch (e) { t = null; }
+  if (t !== 'light' && t !== 'dark') {
+    try { t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    catch (e) { t = 'dark'; }
+  }
+  document.documentElement.setAttribute('data-theme', t);
+})();
+</script>
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/overlays.css">
 </head>
 <body>
 
-<header>
-  <h1>DLSS 5 Neural Rendering</h1>
-  <span class="sub">by kkski</span>
+<a class="skip-link" href="#panelVideo">跳到主要内容</a>
+
+<!-- ------------------------------------------------------------------
+     图标精灵：一律用矢量图标，不用 emoji
+     （emoji 是字体决定的，跨机器渲染不一致，也无法跟随主题变色）
+     ------------------------------------------------------------------ -->
+<svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+  <defs>
+    <g id="ic" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></g>
+  </defs>
+  <symbol id="i-film" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2.5" y="4.5" width="19" height="15" rx="2"/><path d="M7 4.5v15M17 4.5v15M2.5 9.5h4.5M2.5 14.5h4.5M17 9.5h4.5M17 14.5h4.5"/>
+  </symbol>
+  <symbol id="i-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="4.5" width="18" height="15" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M3.5 17.5l5-5 4 4 3-3 5 5"/>
+  </symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3.5 3 8l9 4.5L21 8z"/><path d="M3 12.5 12 17l9-4.5"/><path d="M3 16.5 12 21l9-4.5"/>
+  </symbol>
+  <symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M7.5 4.8v14.4L19 12z"/>
+  </symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="7" y="5" width="3.6" height="14" rx="1"/><rect x="13.4" y="5" width="3.6" height="14" rx="1"/>
+  </symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 9.5h3l4-3.5v12l-4-3.5H4z"/><path d="M15.5 9a4 4 0 0 1 0 6"/><path d="M18 6.6a7.4 7.4 0 0 1 0 10.8"/>
+  </symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 9.5h3l4-3.5v12l-4-3.5H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>
+  </symbol>
+  <symbol id="i-swap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 8.5h13l-3.2-3.2M20 15.5H7l3.2 3.2"/>
+  </symbol>
+  <symbol id="i-zoom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 4.5H4.5V9M15 4.5h4.5V9M9 19.5H4.5V15M15 19.5h4.5V15"/>
+  </symbol>
+  <symbol id="i-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3.5v10.5"/><path d="M8 10.5l4 4 4-4"/><path d="M4.5 17v2.5h15V17"/>
+  </symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.5 6.5h5l2 2.5h9v9.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3.5 18z"/>
+  </symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 16.5V4.5"/><path d="M8 8.5l4-4 4 4"/><path d="M4.5 15v3.5a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5V15"/>
+  </symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 10.5h10.5a4.75 4.75 0 0 1 0 9.5H11"/><path d="M7.5 6.5 3.5 10.5l4 4"/>
+  </symbol>
+  <symbol id="i-redo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 10.5H9.5a4.75 4.75 0 0 0 0 9.5H13"/><path d="M16.5 6.5l4 4-4 4"/>
+  </symbol>
+  <symbol id="i-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6.5 11.5 12 6l5.5 5.5"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v13M6.5 12.5 12 18l5.5-5.5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4 2.5 20h19z"/><path d="M12 10v4.5M12 17.6v.01"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"/>
+  </symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5z"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7.5 9.5l3 2.5-3 2.5M13 15h4"/>
+  </symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M11 3.5l1.7 4.4 4.4 1.7-4.4 1.7L11 15.7l-1.7-4.4L4.9 9.6l4.4-1.7z"/><path d="M18.5 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/>
+  </symbol>
+  <symbol id="i-target" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.4"/><path d="M12 2v2.6M12 19.4V22M2 12h2.6M19.4 12H22"/>
+  </symbol>
+  <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 6.5h12M8 12h12M8 17.5h12M3.6 6.5h.01M3.6 12h.01M3.6 17.5h.01"/>
+  </symbol>
+</svg>
+
+<!-- ------------------------------------------------------------------ 顶栏 -->
+<header class="app-header">
+  <div class="brand">
+    <h1>DLSS 5 Neural Rendering</h1>
+    <span class="sub">by kkski</span>
+  </div>
+
+  <!-- 模式切换：一次只呈现一个任务的输入/操作/结果，不再把 4 个模块堆在一屏 -->
+  <div class="tabs" role="tablist" aria-label="渲染模式">
+    <button class="tab" id="tabVideo" type="button" role="tab" aria-selected="true" aria-controls="panelVideo" data-tab="video">
+      <svg class="tab-icon" width="15" height="15" aria-hidden="true"><use href="#i-film"/></svg>视频
+    </button>
+    <button class="tab" id="tabImage" type="button" role="tab" aria-selected="false" aria-controls="panelImage" data-tab="image" tabindex="-1">
+      <svg class="tab-icon" width="15" height="15" aria-hidden="true"><use href="#i-image"/></svg>图片
+    </button>
+    <button class="tab" id="tabBatch" type="button" role="tab" aria-selected="false" aria-controls="panelBatch" data-tab="batch" tabindex="-1">
+      <svg class="tab-icon" width="15" height="15" aria-hidden="true"><use href="#i-layers"/></svg>批量
+    </button>
+  </div>
+
+  <div class="header-actions">
+    <span class="status-pill" id="globalStatus" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span><span id="globalStatusTxt">空闲</span>
+    </span>
+    <button class="btn icon" id="logToggleTop" type="button" title="日志面板（Ctrl+L）" aria-label="展开或折叠日志面板">
+      <svg class="btn-icon" width="16" height="16" aria-hidden="true"><use href="#i-terminal"/></svg>
+    </button>
+    <button class="btn icon" id="themeToggle" type="button" title="切换深色 / 浅色（Ctrl+Shift+L）" aria-label="切换深色和浅色主题">
+      <svg class="btn-icon only-light" width="16" height="16" aria-hidden="true"><use href="#i-moon"/></svg>
+      <svg class="btn-icon only-dark" width="16" height="16" aria-hidden="true"><use href="#i-sun"/></svg>
+    </button>
+    <div id="exitWrap">
+      <button class="exit-power" id="exitBtn" type="button" title="停止渲染、清空临时缓存并退出程序">
+        <span class="exit-ico" aria-hidden="true">⏻</span>退出
+      </button>
+    </div>
+  </div>
 </header>
 
-<div class="wrap">
+<div class="workspace">
 
-  <!-- ------------------------------------------------------------ left -->
-  <div>
-    <div class="card" id="fileCard">
-      <h2>视频渲染</h2>
-      <label class="field">
-        <span>视频选择</span>
-        <div class="btn-row mb-8">
-          <button class="btn" id="filePickerBtn">选择路径或将视频拖入</button>
-        </div>
-      </label>
-      <label class="field">
-        <span>输入路径（也可手动粘贴）</span>
-        <input type="text" id="input" placeholder="D:\video\input.mp4">
-      </label>
-    </div>
-
+  <!-- ------------------------------------------------------- 参数栏（所有模式共用） -->
+  <aside class="rail" id="paramsRail" aria-label="渲染参数">
     <div class="card">
-      <h2>参数设置</h2>
-
+      <h2><svg class="h2-icon" width="14" height="14" aria-hidden="true"><use href="#i-list"/></svg>参数预设</h2>
       <div class="preset-box">
         <div class="preset-row">
+          <label class="sr-only" for="presetName">预设名称</label>
           <input type="text" id="presetName" placeholder="预设名称">
-          <button class="btn" id="presetSaveBtn" title="把当前参数保存为预设，同名则覆盖">保存</button>
+          <button class="btn" id="presetSaveBtn" type="button" title="把当前参数保存为预设，同名则覆盖">保存</button>
         </div>
         <div class="preset-row">
           <div class="preset-list-wrap" id="presetListWrap">
-            <button type="button" id="presetListBtn" class="preset-list-btn" aria-haspopup="listbox">
-              <span id="presetListLabel">（暂无预设）</span>
-              <span class="caret">▾</span>
+            <button type="button" id="presetListBtn" class="preset-list-btn" aria-haspopup="listbox" aria-expanded="false">
+              <span id="presetListLabel" class="truncate">（暂无预设）</span>
+              <svg class="caret" width="12" height="12" aria-hidden="true"><use href="#i-down"/></svg>
             </button>
-            <ul class="preset-list-menu" id="presetListMenu" role="listbox"></ul>
+            <ul class="preset-list-menu" id="presetListMenu" role="listbox" aria-label="预设列表"></ul>
           </div>
-          <button class="btn" id="presetLoadBtn" disabled>加载</button>
-          <button class="btn danger" id="presetDelBtn" disabled>删除</button>
+          <button class="btn" id="presetLoadBtn" type="button" disabled>加载</button>
+          <button class="btn danger" id="presetDelBtn" type="button" disabled>删除</button>
         </div>
       </div>
 
-      <label class="field">
-        <span>模型文件</span>
-        <select id="model">
-          <option value="auto">Auto</option>
-          <option value="fp16">FP16</option>
-          <option value="fp8">FP8</option>
-        </select>
-      </label>
-
-      <label class="field">
-        <span>NR Preset</span>
-        <select id="preset">
-          <option value="0">0</option>
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3">3</option>
-        </select>
-      </label>
-
-      <label class="field">
-        <span>NR Style</span>
-        <select id="style">
-          <option value="0">0 - Default</option>
-          <option value="1">1 - Natural</option>
-          <option value="2">2 - Cinematic</option>
-        </select>
-      </label>
-
-      <div class="slider-row">
-        <span class="name">NR Intensity</span>
-        <input type="range" id="intensity" min="0" max="2" step="0.01" value="1">
-        <input type="number" class="num" id="intensity_n" min="0" max="2" step="0.01" value="1">
-      </div>
-      <div class="slider-row">
-        <span class="name">Local Tone Strength</span>
-        <input type="range" id="localTone" min="0" max="2" step="0.01" value="1">
-        <input type="number" class="num" id="localTone_n" min="0" max="2" step="0.01" value="1">
-      </div>
-      <div class="slider-row">
-        <span class="name">Local Structure Strength</span>
-        <input type="range" id="localStructure" min="0" max="2" step="0.01" value="1">
-        <input type="number" class="num" id="localStructure_n" min="0" max="2" step="0.01" value="1">
-      </div>
-      <div class="slider-row">
-        <span class="name">Skin Structure Strength</span>
-        <input type="range" id="skinStructure" min="-1" max="2" step="0.01" value="0.5">
-        <input type="number" class="num" id="skinStructure_n" min="-1" max="2" step="0.01" value="0.5">
-      </div>
-
-      <div class="check-row">
-        <input type="checkbox" id="autoMask" checked>
-        <label for="autoMask">Automatic Mask</label>
-      </div>
-      <div class="check-row">
-        <input type="checkbox" id="uiCorrection">
-        <label for="uiCorrection">NR UI Correction</label>
-      </div>
-
-      <div class="slider-row">
-        <span class="name">Residual Multiplier</span>
-        <input type="range" id="residualMult" min="1.0" max="2.0" step="0.01" value="1.0">
-        <input type="number" class="num" id="residualMult_n" min="1.0" max="2.0" step="0.01" value="1.0">
-      </div>
-
-      <div class="field">
-        <span>Optical Flow Motion</span>
-        <div class="check-row mt-2">
-          <input type="checkbox" id="flowEnable" checked>
-          <label for="flowEnable">启用光流运动矢量（仅 N 卡 NGX 路径消耗；ONNX 后端自动跳过）</label>
+      <details class="group" open>
+        <summary>模型与风格</summary>
+        <div class="group-body">
+          <label class="field">
+            <span class="label">模型精度</span>
+            <select id="model">
+              <option value="auto">自动（推荐）</option>
+              <option value="fp16">FP16</option>
+              <option value="fp8">FP8</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="label">NR 预设档位</span>
+            <select id="preset">
+              <option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="label">NR 风格</span>
+            <select id="style">
+              <option value="0">0 · 默认</option>
+              <option value="1">1 · 自然</option>
+              <option value="2">2 · 电影感</option>
+            </select>
+          </label>
         </div>
-        <label class="field mt-4" title="光流引擎质量档位。SLOW = 最慢但光流最准（默认）；FAST 提速但低纹理区噪声更明显。离线渲染建议 SLOW">
-          <span>光流质量档位</span>
-          <select id="mvecQuality">
-            <option value="2" selected>SLOW（最准，推荐）</option>
-            <option value="1">MEDIUM</option>
-            <option value="0">FAST（最快）</option>
-          </select>
-        </label>
-      </div>
+      </details>
 
-      <label class="field">
-        <span>Depth Inference Interval<span class="warn-tag" title="性能损耗极大：每 N 帧跑一次 DepthAnything（336×182 DML 推理 + CPU 全分辨率双线性放大），720P 实测单次≈76ms、interval=2 时平摊占帧时 38%+；间隔越小越频繁，建议 ≥4 或直接置 0 关闭">⚠ 性能损耗极大</span></span>
-        <input type="number" id="depthInterval" value="0" min="0">
-      </label>
-
-      <label class="field">
-        <span>渲染次数</span>
-        <input type="number" id="renderPasses" value="1" min="1" step="1" title="整段视频重复渲染遍数,必须 ≥ 1,上限不限;耗时与遍数成正比">
-      </label>
-
-      <div id="metaDrop" class="dropzone" title="把本软件输出的视频/图片拖进来，自动恢复当初的渲染参数">
-        <div id="metaDropHint" class="dz-title">🎯 拖入成品文件 · 自动恢复渲染参数</div>
-        <div class="dz-hint">支持本软件输出的 mp4 / mkv / png / jpg（点击此处也可选择文件）</div>
-        <div id="metaDropMsg" style="display:none; margin-top:6px; font-size:12px;"></div>
-      </div>
-      <div class="row-inline">
-        <button class="btn" id="metaUndoBtn" disabled class="btn-xs grow" title="撤销上一步参数调整 (Ctrl+Z)">↩ 撤销</button>
-        <button class="btn" id="metaRedoBtn" disabled class="btn-xs grow" title="重做 (Ctrl+Y)">↪ 重做</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ------------------------------------------------------------ center -->
-  <div>
-    <div class="card" id="exportCard">
-      <h2>渲染与导出设置</h2>
-      <div class="field">
-        <span>时间范围</span>
-        <div class="row-inline gap-8">
-          <input type="number" id="startTime" value="0" min="0" step="0.1" class="grow" title="起始时间（秒），0 = 从头">
-          <input type="number" id="endTime" value="0" min="0" step="0.1" class="grow" title="结束时间（秒），0 = 到结尾">
-        </div>
-        <div class="meta" id="rangeInfo" class="mt-2">0 到结尾（整段）</div>
-      </div>
-      <video id="cmpVideo" controls playsinline muted preload="metadata"
-             class="cmp-video"
-             title="拖动进度条选帧,或用下方按钮把当前时间设为起点/终点"></video>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
-        <button class="btn primary" id="setCmpFrameBtn" title="截取播放器当前画面,直接送图片渲染,在右侧图片模块做单帧对比">快速渲染当前帧</button>
-        <button class="btn" id="pickStartBtn">选择当前时间为起点</button>
-        <button class="btn" id="pickEndBtn">选择当前时间为终点</button>
-        <span class="meta" id="cmpStatus">拖动进度条到想要的画面 → 点「快速渲染当前帧」，结果会出现在右侧图片渲染的对比里</span>
-      </div>
-      <hr class="divider">
-      <div class="field-grid">
-        <label class="field">
-          <span>导出编码器</span>
-          <select id="encoder" class="w-full" title="点击展开查看全部编码器说明。选 NVENC 需要 NVIDIA 显卡；其他显卡/CPU 会自动回退到软编码器">
-            <option value="h264_nvenc">h264_nvenc · 8bit（N卡硬编，最快；无N卡自动回退 libx264）</option>
-            <option value="hevc_nvenc">hevc_nvenc · 8bit（N卡硬编，小体积；无N卡自动回退 libx265）</option>
-            <option value="libx264">libx264 · 8bit（CPU 软编、画质高、慢）</option>
-            <option value="libx265">libx265 · 8bit（CPU 软编、体积最小、最慢）</option>
-          </select>
-        </label>
-        <label class="field">
-          <span>输出路径</span>
-          <div class="row-inline gap-8">
-            <input type="text" id="output" placeholder="留空 = <项目根>/outputs/" class="grow">
-            <button class="btn" id="outputPickBtn" style="flex:0 0 auto;">选择文件夹…</button>
+      <details class="group" open>
+        <summary>强度与质感</summary>
+        <div class="group-body">
+          <div class="slider-row">
+            <span class="name">NR 强度</span>
+            <input type="range" id="intensity" min="0" max="2" step="0.01" value="1" aria-label="NR 强度">
+            <input type="number" class="num" id="intensity_n" min="0" max="2" step="0.01" value="1" aria-label="NR 强度数值">
           </div>
-        </label>
-      </div>
-      <label class="field" style="margin-top:2px; max-width:360px;">
-        <span>渲染显卡</span>
-        <select id="gpuSel" class="w-full" title="选择渲染显卡。NVIDIA 走 NGX 原生推理（最快）；AMD/Intel/无独显机器自动使用 ONNX 重建模型，神经增强同样生效。混合显卡笔记本有 N 卡时选 NVIDIA 独显">
-          <option value="-1">自动（默认）</option>
-        </select>
-      </label>
-            <label class="field mt-2">
-        <span>保存的文件名</span>
-        <input type="text" id="exportName" placeholder="留空 = 默认名（自动带 nr_ 前缀）">
-      </label>
-      <hr class="divider">
-            <div class="btn-row mt-4">
-        <button class="btn primary" id="startBtn" title="开始处理（Ctrl+Enter）">开始处理</button>
-        <button class="btn danger" id="cancelBtn" disabled title="停止当前任务（Esc）">停止当前任务</button>
-      </div>
-      <hr class="divider">
-      <h3 class="section-title">渲染进度</h3>
-      <div class="bar" role="progressbar" aria-label="渲染进度"><i id="bar"></i></div>
-      <div class="status" id="statusText" role="status" aria-live="polite">空闲</div>
-      <div class="meta" id="nowFile" style="margin-top:2px; display:none; color:#7ab8ff;"></div>
-      <div class="meta" id="progStats" style="margin-top:2px; display:none;"></div>
-      <hr class="divider">
-      <div class="status done" id="exportMsg" style="margin-top:6px; display:none;"></div>
-      <h3 class="section-title">渲染队列</h3>
-      <div id="queueBox" style="display:none; font-size:12px; line-height:1.6;"></div>
-    </div>
-    <div class="card" id="videoBatchCard" class="mt-10">
-      <h2>视频批量渲染</h2>
-      <div class="row-inline">
-        <span class="meta text-xs">输入路径</span>
-        <input class="sel" id="vbSrc" type="text" placeholder="选择要渲染的源文件夹（会递归子文件夹）"
-               class="sel input-compact">
-        <button class="btn" id="vbPickSrc" class="btn-xs">选择文件夹…</button>
-      </div>
-      <div class="row-inline">
-        <span class="meta text-xs">输出路径</span>
-        <input class="sel" id="vbOut" type="text"
-               placeholder="留空=源目录下nr_xx文件夹"
-               class="sel input-compact">
-        <button class="btn" id="vbPickOut" class="btn-xs">选择文件夹…</button>
-      </div>
-      <div class="row-inline gap-8">
-        <button class="btn primary" id="vbStart" disabled>开始视频批处理</button>
-        <span class="meta" id="vbInfo" class="text-xs"></span>
-      </div>
-
-    </div>
-
-  </div>
-
-  <!-- ------------------------------------------------------------ image -->
-  <div class="col-img">
-    <div class="card" id="imgCard">
-      <h2>图片渲染</h2>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <button class="btn" id="imgPickBtn">选择图片…</button>
-        <button class="btn primary" id="imgRenderBtn" disabled>渲染此图</button>
-        <button class="btn" id="imgZoomBtn" disabled title="打开全屏对比,鼠标拖动分隔条仔细看渲染差异">放大对比</button>
-        <button class="btn" id="imgSaveBtn" disabled>保存渲染结果…</button>
-      </div>
-      <div style="display:flex; gap:8px; align-items:center; margin-top:6px;">
-        <span class="inline-flex-nowrap">
-          <span class="meta text-xs">渲染次数</span>
-          <input type="number" id="imgRenderPasses" value="1" min="1" step="1" class="w-64"
-                 title="图片重复渲染遍数：第 2 遍起把上一遍的渲染结果当作新图片再渲一次。1 = 渲一次；>1 = 迭代增强（耗时随遍数增长）。仅作用于本卡的「渲染此图」与图片批量渲染">
-        </span>
-        <span class="meta" id="imgPassHint" class="text-2xs-dim">仅作用于本卡「渲染此图」与批量图片渲染</span>
-      </div>
-
-      <div class="meta" id="imgStatus" class="mt-6"></div>
-      <div class="img-drop" id="imgDropZone"
-           title="把图片文件拖到页面任意处,或用截图工具复制后在页面内按 Ctrl+V">
-        拖入图片 · 点击选择 · Ctrl+V 粘贴截图
-      </div>
-      <img id="imgPreview" alt="原图预览"
-           style="display:none; width:100%; max-height:42vh; background:#000; border-radius:8px; margin-top:10px; object-fit:contain;">
-      <div class="compare empty" id="imgBox" style="margin-top:10px; display:none;">
-        <div class="img-stage" id="imgStage">
-          <img class="orig" id="imgOrigImg" alt="原图" src="">
-          <div class="render-layer" id="imgRenderLayer"><img id="imgRenderImg" alt="渲染后" src=""></div>
-          <div class="divider" id="imgDivider"></div>
+          <div class="slider-row">
+            <span class="name">局部色调强度</span>
+            <input type="range" id="localTone" min="0" max="2" step="0.01" value="1" aria-label="局部色调强度">
+            <input type="number" class="num" id="localTone_n" min="0" max="2" step="0.01" value="1" aria-label="局部色调强度数值">
+          </div>
+          <div class="slider-row">
+            <span class="name">局部结构强度</span>
+            <input type="range" id="localStructure" min="0" max="2" step="0.01" value="1" aria-label="局部结构强度">
+            <input type="number" class="num" id="localStructure_n" min="0" max="2" step="0.01" value="1" aria-label="局部结构强度数值">
+          </div>
+          <div class="slider-row">
+            <span class="name">皮肤结构强度</span>
+            <input type="range" id="skinStructure" min="-1" max="2" step="0.01" value="0.5" aria-label="皮肤结构强度">
+            <input type="number" class="num" id="skinStructure_n" min="-1" max="2" step="0.01" value="0.5" aria-label="皮肤结构强度数值">
+          </div>
+          <div class="slider-row">
+            <span class="name">残差倍增</span>
+            <input type="range" id="residualMult" min="1.0" max="2.0" step="0.01" value="1.0" aria-label="残差倍增">
+            <input type="number" class="num" id="residualMult_n" min="1.0" max="2.0" step="0.01" value="1.0" aria-label="残差倍增数值">
+          </div>
+          <label class="check-row">
+            <input type="checkbox" id="autoMask" checked>
+            <span>自动遮罩<span class="hint">自动识别并保留不需要增强的区域</span></span>
+          </label>
+          <label class="check-row">
+            <input type="checkbox" id="uiCorrection">
+            <span>UI 修正<span class="hint">界面文字/图标区域做补偿，避免被过度锐化</span></span>
+          </label>
         </div>
-        <div class="compare-labels">
-          <span>原图</span>
-          <span>渲染后</span>
+      </details>
+
+      <details class="group">
+        <summary>光流与深度（进阶）</summary>
+        <div class="group-body">
+          <label class="check-row">
+            <input type="checkbox" id="flowEnable" checked>
+            <span>启用光流运动矢量<span class="hint">仅 N 卡 NGX 路径消耗；ONNX 后端会自动跳过</span></span>
+          </label>
+          <label class="field" title="光流引擎质量档位。SLOW = 最慢但光流最准（默认）；FAST 提速但低纹理区噪声更明显。离线渲染建议 SLOW">
+            <span class="label">光流质量档位</span>
+            <select id="mvecQuality">
+              <option value="2" selected>SLOW · 最准（推荐）</option>
+              <option value="1">MEDIUM</option>
+              <option value="0">FAST · 最快</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="label">深度推理间隔
+              <span class="badge warn" title="性能损耗极大：每 N 帧跑一次 DepthAnything（336×182 DML 推理 + CPU 全分辨率双线性放大），720P 实测单次≈76ms、interval=2 时平摊占帧时 38%+；间隔越小越频繁，建议 ≥4 或直接置 0 关闭">
+                <svg width="11" height="11" aria-hidden="true"><use href="#i-alert"/></svg>开销极大
+              </span>
+            </span>
+            <input type="number" id="depthInterval" value="0" min="0">
+            <span class="hint">0 = 关闭。启用后每 N 帧做一次深度推理，很慢。</span>
+          </label>
+        </div>
+      </details>
+
+      <details class="group">
+        <summary>迭代与恢复</summary>
+        <div class="group-body">
+          <label class="field" title="整段视频重复渲染的遍数，必须 ≥ 1，上限不限；耗时与遍数成正比">
+            <span class="label">渲染次数</span>
+            <input type="number" id="renderPasses" value="1" min="1" step="1">
+            <span class="hint"><span id="imgPassHint">1 = 渲染一次；&gt;1 = 反复迭代增强，耗时线性增长</span></span>
+          </label>
+          <div id="metaDrop" class="dropzone" tabindex="0" role="button" title="把本软件输出的视频/图片拖进来，自动恢复当初的渲染参数">
+            <svg class="dz-icon" width="22" height="22" aria-hidden="true"><use href="#i-target"/></svg>
+            <div id="metaDropHint" class="dz-title">拖入成品文件 · 恢复参数</div>
+            <div class="dz-hint">支持本软件输出的 mp4 / mkv / png / jpg，点击此处也可选择</div>
+            <div id="metaDropMsg" class="dz-msg" style="display:none"></div>
+          </div>
+          <div class="btn-row mt-2">
+            <button class="btn grow" id="metaUndoBtn" type="button" disabled title="撤销上一步参数调整（Ctrl+Z）">
+              <svg class="btn-icon" width="14" height="14" aria-hidden="true"><use href="#i-undo"/></svg>撤销
+            </button>
+            <button class="btn grow" id="metaRedoBtn" type="button" disabled title="重做（Ctrl+Y）">
+              <svg class="btn-icon" width="14" height="14" aria-hidden="true"><use href="#i-redo"/></svg>重做
+            </button>
+          </div>
+        </div>
+      </details>
+    </div>
+  </aside>
+
+  <main class="stack">
+
+    <!-- ----------------------------------------------------- 视频 -->
+    <section class="panel tabpanel" id="panelVideo" role="tabpanel" aria-labelledby="tabVideo" tabindex="0">
+      <div class="grid-2 wide-right">
+        <div class="stack">
+          <div class="card" id="fileCard">
+            <h2><svg class="h2-icon" width="14" height="14" aria-hidden="true"><use href="#i-film"/></svg>输入视频</h2>
+            <div class="dropzone" id="videoDropZone" tabindex="0" role="button" title="也可以把视频文件拖到窗口任意位置">
+              <svg class="dz-icon" width="26" height="26" aria-hidden="true"><use href="#i-upload"/></svg>
+              <div class="dz-title">把视频拖到这里</div>
+              <div class="dz-hint">支持 mp4 / mov / mkv / avi / webm / m4v · 拖到窗口任意位置也可以</div>
+            </div>
+            <div class="btn-row mt-3">
+              <button class="btn" id="filePickerBtn" type="button">
+                <svg class="btn-icon" width="14" height="14" aria-hidden="true"><use href="#i-folder"/></svg>选择视频文件…
+              </button>
+            </div>
+            <label class="field mt-3">
+              <span class="label">输入路径<span class="dim text-xs">（也可手动粘贴）</span></span>
+              <input type="text" id="input" placeholder="D:\video\input.mp4">
+            </label>
+          </div>
+
+          <div class="card">
+            <h2><svg class="h2-icon" width="14" height="14" aria-hidden="true"><use href="#i-target"/></svg>预览与时间范围</h2>
+            <div class="field">
+              <span class="label">时间范围 <span class="dim text-xs">（0 = 从头 / 到结尾）</span></span>
+              <div class="row">
+                <input type="number" id="startTime" value="0" min="0" step="0.1" class="grow" style="max-width:110px" aria-label="起始时间（秒）" title="起始时间（秒），0 = 从头">
+                <span class="dim">→</span>
+                <input type="number" id="endTime" value="0" min="0" step="0.1" class="grow" style="max-width:110px" aria-label="结束时间（秒）" title="结束时间（秒），0 = 到结尾">
+                <span class="badge mono" id="rangeInfo">0 → 结尾（整段）</span>
+              </div>
+            </div>
+            <video id="cmpVideo" class="cmp-video" controls playsinline muted preload="metadata"
+                   title="拖动进度条选帧，或用下方按钮把当前时间设为起点/终点"></video>
+            <div class="btn-row mt-2">
+              <button class="btn" id="pickStartBtn" type="button">设为起点</button>
+              <button class="btn" id="pickEndBtn" type="button">设为终点</button>
+              <button class="btn" id="setCmpFrameBtn" type="button" title="截取播放器当前画面做单帧渲染对比，完成后自动切到「图片」查看结果">
+                <svg class="btn-icon" width="14" height="14" aria-hidden="true"><use href="#i-spark"/></svg>渲染当前帧并对比
+              </button>
+            </div>
+            <div class="status mt-2" id="cmpStatus">选好视频后拖动进度条，点「渲染当前帧并对比」即可先看效果</div>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="card" id="exportCard">
+            <h2><svg class="h2-icon" width="14" height="14" aria-hidden="true"><use href="#i-save"/></svg>输出设置</h2>
+            <div class="field-grid">
+              <label class="field">
+                <span class="label">导出编码器</span>
+                <select id="encoder" title="选 NVENC 需要 NVIDIA 显卡；其他显卡/CPU 会自动回退到软编码器">
+                  <option value="h264_nvenc">h264_nvenc · 8bit（N 卡硬编，最快）</option>
+                  <option value="hevc_nvenc">hevc_nvenc · 8bit（N 卡硬编，体积小）</option>
+                  <option value="libx264">libx264 · 8bit（CPU 软编，画质高）</option>
+                  <option value="libx265">libx265 · 8bit（CPU 软编，体积最小）</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="label">渲染显卡</span>
+                <select id="gpuSel" title="NVIDIA 走 NGX 原生推理（最快）；AMD/Intel/无独显机器自动使用 ONNX 重建模型，神经增强同样生效">
+                  <option value="-1">自动（默认）</option>
+                </select>
+              </label>
+            </div>
+            <label class="field">
+              <span class="label">输出文件夹</span>
+              <div class="row">
+                <input type="text" id="output" class="grow" placeholder="留空 = 项目根下的 outputs/">
+                <button class="btn" id="outputPickBtn" type="button">
+                  <svg class="btn-icon" width="14" height="14" aria-hidden="true"><use href="#i-folder"/></svg>选择…
+                </button>
+              </div>
+            </label>
+            <label class="field">
+              <span class="label">保存的文件名<span class="dim text-xs">（留空 = 自动带 nr_ 前缀）</span></span>
+              <input type="text" id="exportName" placeholder="留空 = 默认名">
+            </label>
+          </div>
+
+          <div class="card" id="renderCard">
+            <h2><svg class="h2-icon" width="14" height="14" aria-hidden="true"><use href="#i-spark"/></svg>渲染进度</h2>
+            <div class="progress-wrap">
+              <div class="bar" role="progressbar" aria-label="渲染进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="bar"></i></div>
+              <div class="progress-meta">
+                <span class="pct" id="progPct">0%</span>
+                <span class="status" id="statusText">空闲</span>
+              </div>
+            </div>
+            <div class="mono text-sm truncate dim mt-2" id="nowFile" style="display:none"></div>
+            <div class="dim text-sm mt-1" id="progStats" style="display:none"></div>
+            <div class="status is-done mt-2" id="exportMsg" style="display:none"></div>
+            <hr class="divider">
+            <h3 class="text-sm dim mb-2">渲染队列</h3>
+            <div class="queue-list" id="queueBox" style="display:none"></div>
+          </div>
         </div>
       </div>
-    </div>
 
-    <div class="card" id="imgBatchCard" class="mt-10">
-      <h2>图片批量渲染</h2>
-      <div class="row-inline">
-        <span class="meta text-xs">输入路径</span>
-        <input class="sel" id="imgBatchSrc" type="text" placeholder="选择要渲染的源文件夹（会递归子文件夹）"
-               class="sel input-compact">
-        <button class="btn" id="imgBatchPickSrc" class="btn-xs">选择文件夹…</button>
-      </div>
-      <div class="row-inline">
-        <span class="meta text-xs">输出路径</span>
-        <input class="sel" id="imgBatchOut" type="text"
-               placeholder="留空=源目录下nr_xx文件夹"
-               class="sel input-compact">
-        <button class="btn" id="imgBatchPickOut" class="btn-xs">选择文件夹…</button>
-      </div>
-      <div class="row-inline gap-8">
-        <span class="inline-flex-nowrap">
-          <span class="meta text-xs">输出格式</span>
-          <select class="sel" id="imgBatchFmt" title="选择批量输出图片格式">
-            <option value="png">PNG（无损）</option>
-            <option value="jpg">JPG（小）</option>
-          </select>
-        </span>
-        <button class="btn primary" id="imgBatchStart" disabled>开始渲染</button>
-        <button class="btn danger" id="imgBatchStop" disabled>停止</button>
-      </div>
-      <div class="meta" id="imgBatchInfo" style="margin-top:4px; font-size:12px;"></div>
-    </div>
-
-    <div class="card" id="vdCard" class="mt-10 pos-rel">
-      <button class="btn" id="vdZoomClose" style="display:none;">关闭 ✕</button>
-      <h2>视频对比</h2>
-      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
-        <button class="btn" id="vdPickA">选原视频</button>
-        <button class="btn" id="vdSwap" style="font-size:16px; padding:6px 8px;">⇄</button>
-        <button class="btn" id="vdPickB">选渲染后</button>
-        <button class="btn" id="vdZoom" disabled>放大对比</button>
-      </div>
-      <div class="vcompare empty" id="vdBox">
-        <div class="vstage" id="vdStage">
-          <video id="vdAfter" playsinline preload="auto"></video>
-          <div class="vtop" id="vdTop"><video id="vdBefore" playsinline preload="auto"></video></div>
-          <div class="divider" id="vdDivider"></div>
+      <div class="card" id="vdCard">
+        <h2><svg class="h2-icon" width="14" height="14" aria-hidden="true"><use href="#i-film"/></svg>视频对比
+          <span class="h2-note">渲染完成后自动载入原视频与渲染结果</span>
+        </h2>
+        <div class="btn-row mb-2">
+          <button class="btn" id="vdPickA" type="button">选原视频</button>
+          <button class="btn icon" id="vdSwap" type="button" title="交换左右" aria-label="交换左右两侧的视频">
+            <svg class="btn-icon" width="16" height="16" aria-hidden="true"><use href="#i-swap"/></svg>
+          </button>
+          <button class="btn" id="vdPickB" type="button">选渲染后</button>
+          <button class="btn" id="vdZoom" type="button" disabled>
+            <svg class="btn-icon" width="14" height="14" aria-hidden="true"><use href="#i-zoom"/></svg>放大对比
+          </button>
+          <button class="btn" id="vdZoomClose" type="button" title="退出放大（Esc）">退出放大</button>
         </div>
-        <div class="compare-labels">
-          <span id="vdLabL">原视频</span>
-          <span id="vdLabR">渲染后</span>
+        <div class="vcompare empty" id="vdBox">
+          <div class="vstage compare-stage" id="vdStage" tabindex="0" role="slider"
+               aria-label="对比分界线" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+            <video id="vdAfter" playsinline preload="auto"></video>
+            <div class="vtop" id="vdTop"><video id="vdBefore" playsinline preload="auto"></video></div>
+            <div class="split-divider" id="vdDivider"></div>
+          </div>
+          <div class="compare-labels"><span id="vdLabL">原视频</span><span id="vdLabR">渲染后</span></div>
+        </div>
+        <div class="vctrl" id="vdCtrl" hidden>
+          <button class="btn" id="vdPlay" type="button" title="播放 / 暂停" aria-label="播放或暂停">
+            <svg class="btn-icon" width="16" height="16" aria-hidden="true"><use href="#i-play"/></svg>
+          </button>
+          <span class="time" id="vdTime">0:00 / 0:00</span>
+          <input type="range" id="vdSeek" min="0" max="1000" step="1" value="0" title="同步进度条" aria-label="播放进度">
+          <span class="sp"></span>
+          <button class="btn" id="vdMute" type="button" title="静音切换" aria-label="静音切换">
+            <svg class="btn-icon" width="16" height="16" aria-hidden="true"><use href="#i-volume"/></svg>
+          </button>
+          <input type="range" id="vdVol" min="0" max="100" value="100" title="音量" aria-label="音量">
+        </div>
+        <div class="status mt-2" id="vdStatus">渲染完成后会自动导入原视频与渲染结果；也可点上方按钮手动加载</div>
+      </div>
+
+      <div class="actions" data-actions="video">
+        <button class="btn primary lg" id="startBtn" type="button" title="开始处理（Ctrl+Enter）">
+          <svg class="btn-icon" width="15" height="15" aria-hidden="true"><use href="#i-spark"/></svg>开始处理
+        </button>
+        <button class="btn danger lg" id="cancelBtn" type="button" disabled title="停止当前任务（Esc）">
+          <svg class="btn-icon" width="15" height="15" aria-hidden="true"><use href="#i-x"/></svg>停止当前任务
+        </button>
+      </div>
+    </section>
+
+    <!-- ----------------------------------------------------- 图片 -->
+    <section class="panel tabpanel" id="panelImage" role="tabpanel" aria-labelledby="tabImage" tabindex="0" hidden>
+      <div class="grid-2 wide-right">
+        <div class="stack">
+          <div class="card" id="imgCard">
+            <h2><svg class="h2-icon" width="14" height="14" aria-hidden="true"><use href="#i-image"/></svg>输入图片</h2>
+            <div class="dropzone" id="imgDropZone" tabindex="0" role="button" title="把图片文件拖到窗口任意位置，或复制后在本页按 Ctrl+V 粘贴截图">
+              <svg class="dz-icon" width="26" height="26" aria-hidden="true"><use href="#i-upload"/></svg>
+              <div class="dz-title">拖入图片 · 点击选择</div>
+              <div class="dz-hint">也支持 Ctrl+V 粘贴截图（Win+Shift+S 之后直接粘贴）</div>
+            </div>
+            <div class="btn-row mt-3">
+              <button class="btn" id="imgPickBtn" type="button">
+                <svg class="btn-icon" width="14" height="14" aria-hidden="true"><use href="#i-folder"/></svg>选择图片…
+              </button>
+            </div>
+            <label class="field mt-3">
+              <span class="label">图片迭代次数</span>
+              <input type="number" id="imgRenderPasses" value="1" min="1" step="1" title="图片重复渲染遍数：第 2 遍起把上一遍结果当作新图片再渲一次。仅作用于「渲染此图」与图片批量渲染">
+              <span class="hint" id="imgPassHint2">1 = 渲染一次；&gt;1 = 迭代增强，耗时随遍数增长</span>
+            </label>
+            <div class="status mt-2" id="imgStatus">选择或粘贴一张图片后即可渲染</div>
+            <img id="imgPreview" alt="原图预览">
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="card">
+            <h2><svg class="h2-icon" width="14" height="14" aria-hidden="true"><use href="#i-target"/></svg>渲染对比
+              <span class="h2-note">拖动鼠标左右滑动分界线</span>
+            </h2>
+            <div class="compare empty" id="imgBox">
+              <div class="img-stage compare-stage" id="imgStage" tabindex="0" role="slider"
+                   aria-label="渲染前后对比分界线" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+                <img class="orig" id="imgOrigImg" alt="原图" src="">
+                <div class="render-layer" id="imgRenderLayer"><img id="imgRenderImg" alt="渲染后" src=""></div>
+                <div class="split-divider" id="imgDivider"></div>
+              </div>
+              <div class="compare-labels"><span>原图</span><span>渲染后</span></div>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="vctrl" id="vdCtrl" hidden>
-        <button class="btn" id="vdPlay" title="播放/暂停">▶</button>
-        <span class="time" id="vdTime">0:00 / 0:00</span>
-        <input type="range" id="vdSeek" min="0" max="1000" step="1" value="0" title="同步进度条">
-        <span class="sp"></span>
-        <button class="btn" id="vdMute">🔇</button>
-        <input type="range" id="vdVol" min="0" max="100" value="100">
-      </div>
-      <div class="status" id="vdStatus">渲染完成后自动导入原视频与渲染结果；也可点击上方按钮手动加载视频</div>
-    </div>
-  </div>
 
+      <div class="actions" data-actions="image">
+        <button class="btn primary lg" id="imgRenderBtn" type="button" disabled>
+          <svg class="btn-icon" width="15" height="15" aria-hidden="true"><use href="#i-spark"/></svg>渲染此图
+        </button>
+        <button class="btn lg" id="imgZoomBtn" type="button" disabled title="打开全屏对比，仔细看渲染差异">
+          <svg class="btn-icon" width="15" height="15" aria-hidden="true"><use href="#i-zoom"/></svg>放大对比
+        </button>
+        <button class="btn lg" id="imgSaveBtn" type="button" disabled>
+          <svg class="btn-icon" width="15" height="15" aria-hidden="true"><use href="#i-save"/></svg>保存结果…
+        </button>
+      </div>
+    </section>
+
+    <!-- ----------------------------------------------------- 批量 -->
+    <section class="panel tabpanel" id="panelBatch" role="tabpanel" aria-labelledby="tabBatch" tabindex="0" hidden>
+      <div class="grid-2">
+        <div class="card" id="videoBatchCard">
+          <h2><svg class="h2-icon" width="14" height="14" aria-hidden="true"><use href="#i-film"/></svg>视频批量
+            <span class="h2-note">递归子文件夹</span>
+          </h2>
+          <label class="field">
+            <span class="label">输入文件夹</span>
+            <div class="row">
+              <input type="text" id="vbSrc" class="grow" placeholder="选择要渲染的源文件夹">
+              <button class="btn" id="vbPickSrc" type="button">
+                <svg class="btn-icon" width="14" height="14" aria-hidden="true"><use href="#i-folder"/></svg>选择…
+              </button>
+            </div>
+          </label>
+          <label class="field">
+            <span class="label">输出文件夹</span>
+            <div class="row">
+              <input type="text" id="vbOut" class="grow" placeholder="留空 = 源目录下的 nr_xxx 文件夹">
+              <button class="btn" id="vbPickOut" type="button">
+                <svg class="btn-icon" width="14" height="14" aria-hidden="true"><use href="#i-folder"/></svg>选择…
+              </button>
+            </div>
+          </label>
+          <div class="note info mt-2">每个视频会带着「当前参数」依次加入渲染队列，进度在上方队列与底栏显示。</div>
+          <div class="status mt-2" id="vbInfo">还未选择文件夹</div>
+        </div>
+
+        <div class="card" id="imgBatchCard">
+          <h2><svg class="h2-icon" width="14" height="14" aria-hidden="true"><use href="#i-image"/></svg>图片批量
+            <span class="h2-note">递归子文件夹 · 可续跑</span>
+          </h2>
+          <label class="field">
+            <span class="label">输入文件夹</span>
+            <div class="row">
+              <input type="text" id="imgBatchSrc" class="grow" placeholder="选择要渲染的源文件夹">
+              <button class="btn" id="imgBatchPickSrc" type="button">
+                <svg class="btn-icon" width="14" height="14" aria-hidden="true"><use href="#i-folder"/></svg>选择…
+              </button>
+            </div>
+          </label>
+          <label class="field">
+            <span class="label">输出文件夹</span>
+            <div class="row">
+              <input type="text" id="imgBatchOut" class="grow" placeholder="留空 = 源目录下的 nr_xxx 文件夹">
+              <button class="btn" id="imgBatchPickOut" type="button">
+                <svg class="btn-icon" width="14" height="14" aria-hidden="true"><use href="#i-folder"/></svg>选择…
+              </button>
+            </div>
+          </label>
+          <label class="field" style="max-width:190px">
+            <span class="label">输出格式</span>
+            <select id="imgBatchFmt" title="选择批量输出图片格式">
+              <option value="png">PNG（无损）</option>
+              <option value="jpg">JPG（体积小）</option>
+            </select>
+          </label>
+          <div class="note info mt-2">已存在同名输出会被跳过，所以中断后重跑可以接着做。</div>
+          <div class="status mt-2" id="imgBatchInfo">还未选择文件夹</div>
+        </div>
+      </div>
+
+      <div class="actions" data-actions="batch">
+        <span class="badge">视频</span>
+        <button class="btn primary lg" id="vbStart" type="button" disabled>开始视频批量</button>
+        <span class="badge">图片</span>
+        <button class="btn primary lg" id="imgBatchStart" type="button" disabled>开始图片批量</button>
+        <button class="btn danger lg" id="imgBatchStop" type="button" disabled>停止</button>
+      </div>
+    </section>
+
+  </main>
 </div>
 
-<!-- Full-screen image-compare modal (same orig/render/split UX as the inline box, just bigger). -->
-<div class="img-modal" id="imgModal" aria-hidden="true">
+<!-- ------------------------------------------------------------- 底部操作栏 -->
+<div class="action-bar" id="actionBar">
+  <div class="bar-status">
+    <span class="status" id="barStatus">空闲</span>
+    <div class="bar bar-mini" role="progressbar" aria-label="整体进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="barMini"></i></div>
+    <span class="pct mono text-sm" id="barPct">0%</span>
+    <span class="kbd-hint dim text-xs nowrap"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> 开始 · <kbd>Esc</kbd> 停止</span>
+  </div>
+  <div class="slot" id="actionSlot"></div>
+</div>
+
+<!-- ------------------------------------------------------------- 图片放大对比 -->
+<div class="img-modal" id="imgModal" aria-hidden="true" role="dialog" aria-label="渲染结果全屏对比">
   <div class="img-modal-inner">
-    <button class="img-modal-close" id="imgModalClose" title="关闭 (Esc)">关闭 ✕</button>
+    <button class="btn img-modal-close" id="imgModalClose" type="button" title="关闭（Esc）">关闭</button>
     <div class="compare" id="imgModalBox">
-      <div class="img-stage" id="imgModalStage">
+      <div class="img-stage compare-stage" id="imgModalStage" tabindex="0" role="slider"
+           aria-label="全屏对比分界线" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
         <img class="orig" id="imgModalOrig" alt="原图" src="">
         <div class="render-layer" id="imgModalRenderLayer"><img id="imgModalRender" alt="渲染后" src=""></div>
-        <div class="divider" id="imgModalDivider"></div>
+        <div class="split-divider" id="imgModalDivider"></div>
       </div>
-      <div class="compare-labels">
-        <span>原图</span>
-        <span>渲染后</span>
-      </div>
+      <div class="compare-labels"><span>原图</span><span>渲染后</span></div>
     </div>
-    <div class="img-modal-hint">拖动鼠标移动分隔条 · Esc 关闭</div>
+    <div class="img-modal-hint">拖动鼠标或按 ← → 移动分界线 · Esc 关闭</div>
   </div>
 </div>
 
-<!-- batch controls -->
-<!-- video side-by-side compare styles -->
-<!-- power-style exit button -->
-<!-- Power-style exit button: fixed bottom-center, breathing glow only on hover -->
-<div id="exitWrap">
-  <button class="exit-power" id="exitBtn" title="点击即可清除缓存，正常退出程序">⏻</button>
-</div>
-
-<!-- Floating log panel (bottom-right). Default folded; click the header to expand. -->
-<div id="logPanel" class="log-panel folded" aria-live="polite">
+<!-- ------------------------------------------------------------- 日志面板 -->
+<div id="logPanel" class="folded">
   <div class="log-head" id="logHead">
     <span class="log-title">日志</span>
     <span class="log-count" id="logCount">0</span>
     <div class="log-actions">
-      <button class="log-btn" id="logCopyBtn" title="复制全部日志">复制</button>
-      <button class="log-btn" id="logClearBtn" title="清空当前显示(下次启动任务前不清空)">清空</button>
-      <button class="log-btn" id="logToggleBtn" title="展开/折叠">▾</button>
+      <button class="log-btn" id="logCopyBtn" type="button" title="复制全部日志">复制</button>
+      <button class="log-btn" id="logClearBtn" type="button" title="清空当前显示">清空</button>
+      <button class="log-btn" id="logToggleBtn" type="button" title="展开 / 折叠" aria-label="展开或折叠日志面板">▾</button>
     </div>
   </div>
-  <pre class="log-body" id="logBody"></pre>
+  <pre class="log-body" id="logBody" aria-live="polite" aria-label="运行日志"></pre>
 </div>
 
-  <script src="js/overlays-compare.js"></script>
-  <script src="js/app-core.js"></script>
-  <script src="js/app-status.js"></script>
-  <script src="js/app-range.js"></script>
-  <script src="js/app-image.js"></script>
-  <script src="js/app-video-batch.js"></script>
-  <script src="js/app-params.js"></script>
-  <script src="js/app-shortcuts.js"></script>
+<!-- ------------------------------------------------------------- 提示 / 拖放 / 确认 -->
+<div id="toasts" aria-live="polite"></div>
+
+<div id="dropOverlay" role="presentation">
+  <div class="drop-card">
+    <svg class="dc-icon" width="38" height="38" aria-hidden="true"><use href="#i-upload"/></svg>
+    <div class="dc-title" id="dropTitle">松手即可导入</div>
+    <div class="dc-sub" id="dropSub">已识别文件类型，将自动切到对应的模式</div>
+    <div class="dc-modes">
+      <span>视频 → 设为输入视频</span>
+      <span>图片 → 设为输入图片</span>
+      <span>本软件输出的 mp4 / png / jpg → 恢复渲染参数</span>
+    </div>
+  </div>
+</div>
+
+<div id="confirmModal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+  <div class="confirm-card">
+    <h2 id="confirmTitle">确认</h2>
+    <p id="confirmMsg"></p>
+    <div class="row">
+      <button class="btn" id="confirmCancel" type="button">取消</button>
+      <button class="btn danger" id="confirmOk" type="button">确定</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/app-shell.js"></script>
+<script src="js/overlays-compare.js"></script>
+<script src="js/app-core.js"></script>
+<script src="js/app-status.js"></script>
+<script src="js/app-range.js"></script>
+<script src="js/app-image.js"></script>
+<script src="js/app-video-batch.js"></script>
+<script src="js/app-params.js"></script>
 </body>
 </html>

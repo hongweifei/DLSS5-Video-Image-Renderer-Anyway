@@ -1,31 +1,33 @@
 // 视频对比播放器（自包含 IIFE）
-// 视频对比播放器（自包含 IIFE） — 见文件内注释
 //
-// 由 tools/split-web.js 从原 index.html 的内联 <script> 机械拆分而成：
-// 分块连续且顺序不变，因此执行语义与拆分前完全一致。
-// 全部文件共享同一全局作用域（非 ES module），互相可以直接引用。
+// 放大视图、Esc 关闭等"应用级"交互交给 app-shell.js 统一处理；这里通过
+// window.vdCompare 暴露 setZoom/setSplit 供它调用，不再自己挂 document 监听。
 
 // ----------------------------------------------------------------- video side-by-side compare
 (function () {
   const $ = (id) => document.getElementById(id);
-(function () {
-  document.querySelectorAll('input, textarea').forEach((el) => {
-    el.setAttribute('autocomplete', 'off');
-    el.setAttribute('autocorrect', 'off');
-    el.setAttribute('autocapitalize', 'off');
-    el.setAttribute('spellcheck', 'false');
-  });
-})();
   const vB = $('vdBefore'), vA = $('vdAfter');       // vB = rendered-before (top-left), vA = after (base)
   const box = $('vdBox'), stage = $('vdStage'), topL = $('vdTop'), div = $('vdDivider');
   const playB = $('vdPlay'), seek = $('vdSeek'), timeT = $('vdTime');
   const vol = $('vdVol'), muteB = $('vdMute'), ctrl = $('vdCtrl'), st = $('vdStatus');
   let ready = { a: false, b: false };
   let dragging = false, syncing = false, curMuted = true, inited = false, autoNext = false;
-  window.__vdManual = false;             // user picked videos manually -> don't auto-overwrite
-  window.__vdAutoDone = false;
+  window.__vdManual = false;             // 用户手动选过对比视频 -> 不再自动覆盖
   let autoTries = 0;
-  const muteAll = () => { vB.muted = true; vA.muted = true; curMuted = true; muteB.textContent = '🔇'; };
+
+  // 图标用 SVG sprite 换 href，而不是写 emoji：emoji 由字体决定，跨机器不一致，
+  // 也无法跟随主题色。
+  function setIcon(btn, iconId, label) {
+    if (!btn) return;
+    const u = btn.querySelector('use');
+    if (u) u.setAttribute('href', '#' + iconId);
+    if (label) {
+      btn.setAttribute('aria-label', label);
+      btn.title = label;
+    }
+  }
+  const setMuteIcon = () => setIcon(muteB, curMuted ? 'i-mute' : 'i-volume', curMuted ? '取消静音' : '静音');
+  const muteAll = () => { vB.muted = true; vA.muted = true; curMuted = true; setMuteIcon(); };
   const kick = (v) => {
     try {
       const pr = v.play();
@@ -66,6 +68,9 @@
       alignFromMaster();                        // park slave at start+offset before any play
       if (autoNext) { autoTries = 0; autoPlay(); }   // auto-imported after a render -> start playing
       ctrl.hidden = false;
+      st.hidden = false;
+      st.textContent = (autoNext ? '已自动载入渲染结果 · ' : '已就绪 · ')
+        + '拖动分界线对比，或点「放大对比」全屏查看';
     } };
   function applyLabels() {
     const leftOrig = !flipped;
@@ -81,11 +86,11 @@
     vM = (flipped ? vB : vA);                   // element that now plays the RENDERED clip
     vO = (flipped ? vA : vB);                   // element that plays the ORIGINAL (slave+offset)
     // default muted on both; volume slider is the only way to unmute the rendered track
-    vB.muted = true; vA.muted = true; curMuted = true; muteB.textContent = '🔇';
+    vB.muted = true; vA.muted = true; curMuted = true; setMuteIcon();
     applyLabels();
     box.classList.remove('empty');
     ctrl.hidden = true;
-    playB.textContent = '▶';
+    setPlayIcon(true);
   }
   function load(a, b, auto, startS) {
     if (!a || !b) return;
@@ -107,9 +112,23 @@
     const d = vM.duration || 0, t = vM.currentTime || 0;
     timeT.textContent = fmt(t) + ' / ' + fmt(d);
     if (!dragging && d > 0) seek.value = Math.round((t / d) * 1000);
-    if (vM.ended) playB.textContent = '▶';
+    if (vM.ended) setPlayIcon(true);
   }
-  function setPlayIcon() { playB.textContent = (vM && !vM.paused) ? '⏸' : '▶'; }
+  // force=true 表示"已知暂停/结束"，不依赖 vM.paused（换源瞬间它还是旧值）
+  function setPlayIcon(force) {
+    const playing = force === true ? false : (vM && !vM.paused);
+    setIcon(playB, playing ? 'i-pause' : 'i-play', playing ? '暂停' : '播放');
+  }
+
+  // 解码失败要说话：原来两个 <video> 都没有 error 监听，一个损坏/不可解码的文件
+  // 只会留下一个黑框，放大按钮永远禁用，也不给任何解释。
+  const onMediaError = (which) => {
+    st.hidden = false;
+    st.textContent = (which === 'b' ? '渲染后' : '原视频') + ' 无法播放（文件损坏或浏览器不支持该编码）';
+    if (window.uiErr) window.uiErr('视频对比：' + (which === 'b' ? '渲染后' : '原视频') + ' 无法播放');
+  };
+  vA.addEventListener('error', () => onMediaError('a'));
+  vB.addEventListener('error', () => onMediaError('b'));
 
   vA.addEventListener('loadedmetadata', () => onReady('a'));
   vB.addEventListener('loadedmetadata', () => onReady('b'));
@@ -173,36 +192,35 @@
   muteB.addEventListener('click', () => {
     curMuted = !curMuted;
     vA.muted = curMuted;
-    muteB.textContent = curMuted ? '🔇' : '🔊';
+    setMuteIcon();
   });
-  vol.addEventListener('input', () => { vA.volume = vol.value / 100; vA.muted = false; curMuted = false; muteB.textContent = '🔊'; });
+  vol.addEventListener('input', () => { vA.volume = vol.value / 100; vA.muted = false; curMuted = false; setMuteIcon(); });
 
-  // mouse-driven split (hover & drag both work)
+  // 分隔线：指针按住拖动 / 鼠标悬停跟随 / 键盘 ← → 可调。
+  // 原来只有 mousemove，而且 mouseleave 会把分界线弹回 50% —— 想定住看左边都做不到。
   const setSplit = (pct) => {
     const p = Math.min(1, Math.max(0, pct));
-    // top layer = 原视频 must stay LEFT of the divider: clip away its RIGHT side
+    // 上层 = 原视频，必须留在分界线左边：把它的右侧裁掉
     topL.style.clipPath = 'inset(0 ' + ((1 - p) * 100) + '% 0 0)';
     div.style.left = (p * 100) + '%';
   };
-  stage.addEventListener('mousemove', (e) => {
-    const r = stage.getBoundingClientRect();
-    if (r.width > 0) setSplit((e.clientX - r.left) / r.width);
-  });
-  stage.addEventListener('mouseleave', () => setSplit(0.5));
-  setSplit(0.5);
+  if (window.uiBindSplit) window.uiBindSplit(stage, setSplit);
+  else setSplit(0.5);
 
   function srcOf(v) { const m = /path=([^&]*)/.exec(v.src || ''); return m ? decodeURIComponent(m[1]) : null; }
   $('vdPickA').addEventListener('click', async () => {
     const r = await fetch('/api/pick-video').then((x) => x.json());
-    if (!r.ok) { if (!r.cancelled) { st.style.display=''; st.textContent = '选择失败: ' + (r.error || '?'); } return; }
+    if (!r.ok) { if (!r.cancelled) { status('选择失败：' + (r.error || '未知原因')); } return; }
     const other = srcOf(vA);
     load(r.path, other || r.path);
+    status('原视频已载入：' + (r.path.split(/[\\/]/).pop()));
   });
   $('vdPickB').addEventListener('click', async () => {
     const r = await fetch('/api/pick-video').then((x) => x.json());
-    if (!r.ok) { if (!r.cancelled) { st.style.display=''; st.textContent = '选择失败: ' + (r.error || '?'); } return; }
+    if (!r.ok) { if (!r.cancelled) { status('选择失败：' + (r.error || '未知原因')); } return; }
     const other = srcOf(vB);
     load(other || r.path, r.path);
+    status('渲染后视频已载入：' + (r.path.split(/[\\/]/).pop()));
   });
   $('vdSwap').addEventListener('click', () => {
     if (!roleA || !roleB) return;
@@ -210,26 +228,35 @@
     applyLayout();
   });
 
-  // Full-screen zoom compare: reuses the SAME dom/stage/scrubber/divider (no duplicated state).
+  // 全屏放大：复用同一套 DOM / stage / 进度条 / 分界线（不复制状态），
+  // Esc 由 app-shell.js 的统一入口调用 setZoom(false)。
   const vdCard = $('vdCard'), zoomB = $('vdZoom'), zoomX = $('vdZoomClose');
   const setZoom = (on) => {
     vdCard.classList.toggle('vd-zoom', on);
-    zoomB.textContent = on ? '✕ 退出放大' : '放大对比';
+    zoomB.setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (on) zoomX.focus();
   };
-  zoomB.addEventListener('click', () => setZoom(!vdCard.classList.contains('vd-zoom')));
+  const isZoomed = () => vdCard.classList.contains('vd-zoom');
+  zoomB.addEventListener('click', () => setZoom(!isZoomed()));
   zoomX.addEventListener('click', () => setZoom(false));
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && vdCard.classList.contains('vd-zoom')) setZoom(false);
-  });
+
+  // 手动选片时给出反馈（原来 #vdStatus 永远停在"渲染完成后自动导入…"）
+  function status(text) {
+    st.hidden = false;
+    st.textContent = text;
+  }
 
   window.vdCompare = {
     load: load,
+    setZoom: setZoom,
+    isZoomed: isZoomed,
+    setSplit: setSplit,
     autoload: (a, b, startS) => {
-      // A freshly finished render always wins (also for later jobs in the queue): import the new
-      // pair and autoplay. startS = render window start (0 = full clip), used to keep the FULL
-      // original aligned with a windowed render (orig_time = t + startS).
-      window.__vdManual = false;
+      // 新渲染完成的结果总是优先导入（队列后面的任务也一样）并自动播放。
+      // startS = 渲染窗口起点（0 = 整段），用来把"完整的原视频"对齐到窗口渲染结果：
+      // orig_time = t + startS。
       load(a, b, true, startS);
+      status('已载入最新渲染结果 · 拖动分界线或放大对比');
     },
   };
 })();

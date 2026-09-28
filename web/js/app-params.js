@@ -1,15 +1,8 @@
 // 参数持久化、渲染参数恢复、撤销/重做、命名预设
-// 参数持久化、渲染参数恢复、撤销/重做、命名预设 — 见文件内注释
-//
-// 由 tools/split-web.js 从原 index.html 的内联 <script> 机械拆分而成：
-// 分块连续且顺序不变，因此执行语义与拆分前完全一致。
-// 全部文件共享同一全局作用域（非 ES module），互相可以直接引用。
 
 // ---------------------------------------------------------------- persist params
-// Model / render parameters are remembered across page reloads (localStorage), so reopening the
-// page keeps the previous tuning instead of resetting to defaults. Only "parameter" controls are
-// persisted: file paths and the trim start/end belong to one specific job and are left out (a new
-// input resets the range anyway).
+// 模型 / 渲染参数在刷新后保留（localStorage），重新打开页面不会回到默认值。
+// 只持久化"参数"控件：文件路径与裁剪时间属于某一次具体任务，不保存。
 const LS_PARAMS_KEY = 'dlss5nr.params.v1';
 const PARAM_IDS = [
   'model', 'preset', 'style',
@@ -17,6 +10,8 @@ const PARAM_IDS = [
   'autoMask', 'uiCorrection', 'residualMult',
   'flowEnable', 'mvecQuality', 'depthInterval',
   'encoder', 'renderPasses',
+  // 这两个原来漏了：显卡选择与图片迭代次数长得和别的参数一样，却每次刷新都重置
+  'gpuSel', 'imgRenderPasses',
 ];
 
 function persistParams() {
@@ -28,7 +23,7 @@ function persistParams() {
       o[id] = (el.type === 'checkbox') ? el.checked : el.value;
     }
     localStorage.setItem(LS_PARAMS_KEY, JSON.stringify(o));
-  } catch (e) { /* storage disabled / full: ignore */ }
+  } catch (e) { /* 隐私模式 / 配额满：忽略 */ }
 }
 
 function applyParamTo(id, val) {
@@ -41,13 +36,13 @@ function applyParamTo(id, val) {
   const asStr = String(val);
   if (el.tagName === 'SELECT' && ![].some.call(el.options, (op) => op.value === asStr)) return;
   el.value = asStr;
-  const twin = $(id + '_n'); // slider + number pair: keep the number box in sync too
+  const twin = $(id + '_n');   // 滑杆 + 数字框：两个视图一起更新
   if (twin && twin.type === 'number' && el.type === 'range') twin.value = asStr;
 }
 
 function restoreParams() {
   let o = null;
-  try { o = JSON.parse(localStorage.getItem(LS_PARAMS_KEY) || 'null'); } catch (e) {}
+  try { o = JSON.parse(localStorage.getItem(LS_PARAMS_KEY) || 'null'); } catch (e) { /* ignore */ }
   if (!o || o.v !== 1) return;
   for (const id of PARAM_IDS) if (id in o) applyParamTo(id, o[id]);
 }
@@ -61,22 +56,22 @@ PARAM_IDS.forEach((id) => {
 });
 restoreParams();
 
-// ---------------------------------------------------------------- meta 恢复 + 参数撤销/重做
-// The engine stamps finished mp4/png/jpg with the render parameters ("render_cfg=" payload).
-// Dropping such a file restores those settings instantly (no confirmation — the user asked for
-// it by dropping). An undo/redo stack records parameter-set changes so a mistaken restore can
-// be rolled back with Ctrl+Z / Ctrl+Y.
-// Mapping between the meta JSON keys (engine whitelist) and the UI control ids. frameGuidance
-// drives the flowEnable checkbox; keys with no UI control are ignored on restore.
+// ---------------------------------------------------------------- 参数撤销 / 重做
+// 引擎会把渲染参数写进成品文件（"render_cfg=" 载荷）。把这种文件拖进来即可还原
+// 当时的设置。撤销栈记录"参数集合"的变化，误还原可以用 Ctrl+Z 退回。
+//
+// 快捷键在 app-shell.js 里统一处理（原来是这里的 document keydown，会在输入框里
+// 抢走浏览器自己的 Ctrl+Z，把文字编辑变成滑杆跳动）。
 const META_TO_UI = {
   preset: 'preset', style: 'style',
   intensity: 'intensity', localTone: 'localTone', localStructure: 'localStructure',
   skinStructure: 'skinStructure', autoMask: 'autoMask', uiCorrection: 'uiCorrection',
   residualMult: 'residualMult', mvecQuality: 'mvecQuality', depthInterval: 'depthInterval',
+  renderPasses: 'renderPasses',
 };
 
-let paramHistory = [];    // snapshots (oldest first); newest at the end
-let historyIndex = -1;    // index of the current state within paramHistory
+let paramHistory = [];    // 快照（最旧在前）
+let historyIndex = -1;    // 当前状态在栈中的位置
 const HISTORY_MAX = 24;
 
 function snapshotParams() {
@@ -91,8 +86,7 @@ function snapshotParams() {
 
 function pushHistory() {
   const snap = snapshotParams();
-  // Drop any redo tail (a new change after undo invalidates the redo branch).
-  paramHistory = paramHistory.slice(0, historyIndex + 1);
+  paramHistory = paramHistory.slice(0, historyIndex + 1);   // 新改动会丢弃 redo 分支
   paramHistory.push(snap);
   if (paramHistory.length > HISTORY_MAX) paramHistory.shift();
   historyIndex = paramHistory.length - 1;
@@ -110,6 +104,7 @@ function undoParams() {
   applySnapshot(paramHistory[historyIndex]);
   persistParams();
   syncHistoryBtns();
+  if (window.uiToast) window.uiToast('已撤销参数修改', 'info', { ms: 1800 });
 }
 
 function redoParams() {
@@ -118,6 +113,7 @@ function redoParams() {
   applySnapshot(paramHistory[historyIndex]);
   persistParams();
   syncHistoryBtns();
+  if (window.uiToast) window.uiToast('已重做参数修改', 'info', { ms: 1800 });
 }
 
 function syncHistoryBtns() {
@@ -127,22 +123,15 @@ function syncHistoryBtns() {
 
 $('metaUndoBtn').addEventListener('click', undoParams);
 $('metaRedoBtn').addEventListener('click', redoParams);
-document.addEventListener('keydown', (e) => {
-  if (e.ctrlKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); undoParams(); }
-  else if (e.ctrlKey && e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); redoParams(); }
-  else if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redoParams(); }
-});
-pushHistory();   // baseline state
+pushHistory();   // 基线
 
-// Record a history step on slider/number/checkbox changes (input events during dragging would
-// flood the stack, so only the settled change is recorded).
 PARAM_IDS.forEach((id) => {
   const el = $(id);
   if (!el) return;
   el.addEventListener('change', pushHistory);
 });
 
-// Apply a decoded meta JSON to the UI controls, then snapshot the new state as one undo step.
+// 把解析出来的 meta JSON 应用到界面，并作为一步撤销记录。
 function applyRenderMeta(meta) {
   for (const [k, id] of Object.entries(META_TO_UI)) {
     if (k in meta) applyParamTo(id, meta[k]);
@@ -152,12 +141,30 @@ function applyRenderMeta(meta) {
   pushHistory();
 }
 
+// 参数键名 → 中文说明，恢复后给用户看的是人话而不是英文键
+const META_LABEL = {
+  preset: '预设档位', style: '风格', intensity: 'NR 强度', localTone: '局部色调',
+  localStructure: '局部结构', skinStructure: '皮肤结构', autoMask: '自动遮罩',
+  uiCorrection: 'UI 修正', residualMult: '残差倍增', mvecQuality: '光流质量',
+  depthInterval: '深度间隔', renderPasses: '渲染次数', frameGuidance: '光流',
+};
+
+function showMetaMsg(text, isErr) {
+  const m = $('metaDropMsg');
+  m.textContent = text;
+  m.className = 'dz-msg ' + (isErr ? 'is-error' : 'is-ok');
+  m.style.display = '';
+  setTimeout(() => { m.style.display = 'none'; }, 8000);
+}
+
 async function metaDropFile(file) {
   const okExt = /\.(mp4|mkv|mov|m4v|png|jpe?g)$/i.test(file.name);
   if (!okExt) {
-    showMetaMsg('仅支持本软件输出的 mp4/mkv/png/jpg', true);
+    showMetaMsg('仅支持本软件输出的 mp4 / mkv / png / jpg', true);
     return;
   }
+  const zone = $('metaDrop');
+  const stopTick = window.uiElapsed ? window.uiElapsed($('metaDropHint'), '正在读取文件') : null;
   try {
     const up = await fetch('/api/upload', {
       method: 'POST',
@@ -165,39 +172,42 @@ async function metaDropFile(file) {
       body: file,
     }).then((x) => x.json());
     if (!up.ok || !up.path) throw new Error(up.error || '上传失败');
+    $('metaDropHint').textContent = '正在解析渲染参数…';
     const r = await fetch('/api/read-meta', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: up.path }),
     }).then((x) => x.json());
     if (!r.ok || !r.found || !r.meta) {
-      showMetaMsg('该文件未包含渲染参数（可能不是本软件输出的）', true);
+      showMetaMsg('该文件里没有渲染参数（可能不是本软件输出的）', true);
       return;
     }
     applyRenderMeta(r.meta);
-    const summ = Object.entries(r.meta)
+    const parts = Object.entries(r.meta)
       .filter(([k]) => META_TO_UI[k] || k === 'frameGuidance')
-      .map(([k, v]) => k + '=' + v).join('  ');
-    showMetaMsg('✅ 已恢复参数：' + summ, false);
+      .map(([k, v]) => (META_LABEL[k] || k) + '=' + v);
+    showMetaMsg('已恢复：' + parts.join('  '), false);
+    if (window.uiOk) window.uiOk('已恢复渲染参数（共 ' + parts.length + ' 项），可用 Ctrl+Z 撤销', { force: true });
   } catch (e) {
-    showMetaMsg('恢复失败: ' + e.message, true);
+    showMetaMsg('恢复失败：' + e.message, true);
+    if (window.uiErr) window.uiErr('恢复参数失败：' + e.message);
+  } finally {
+    if (stopTick) stopTick();
+    $('metaDropHint').textContent = '拖入成品文件 · 恢复参数';
+    if (zone) zone.classList.remove('drop-active');
   }
-}
-
-function showMetaMsg(text, isErr) {
-  const m = $('metaDropMsg');
-  m.textContent = text;
-  m.style.color = isErr ? '#c44' : '#3a8a4a';
-  m.style.display = '';
-  setTimeout(() => { m.style.display = 'none'; }, 6000);
 }
 
 const metaDrop = $('metaDrop');
 ['dragenter', 'dragover'].forEach((ev) => metaDrop.addEventListener(ev, (e) => {
-  e.preventDefault(); e.stopPropagation(); metaDrop.style.borderColor = '#4a9';
+  e.preventDefault();
+  e.stopPropagation();
+  metaDrop.classList.add('drop-active');
 }));
 ['dragleave', 'drop'].forEach((ev) => metaDrop.addEventListener(ev, (e) => {
-  e.preventDefault(); e.stopPropagation(); metaDrop.style.borderColor = '';
+  e.preventDefault();
+  e.stopPropagation();
+  metaDrop.classList.remove('drop-active');
 }));
 metaDrop.addEventListener('drop', (e) => {
   const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
@@ -210,15 +220,16 @@ metaDrop.addEventListener('click', () => {
   inp.onchange = () => { if (inp.files && inp.files[0]) metaDropFile(inp.files[0]); };
   inp.click();
 });
+metaDrop.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); metaDrop.click(); }
+});
 
 // ---------------------------------------------------------------- named presets
-// User-saved snapshots of the 参数设置 card ONLY (encoder belongs to 输出设置 and is not part
-// of a preset). They live in localStorage under their own key, separate from the automatic
-// "remember last tuning" (restoreParams/persistParams) above, so the two mechanisms coexist:
-// opening the page still restores the last-used tuning, and presets add named save/load/delete.
+// 命名预设只保存「参数」这一类（编码器属于输出设置，不进预设）。与上面的"记住上次
+// 调参"分开存，两者互不干扰。
 const LS_PRESETS_KEY = 'dlss5nr.presets.v1';
-const PRESET_IDS = PARAM_IDS.filter((id) => id !== 'encoder');
-let presetCurrent = '';   // currently selected preset name (driven by the custom dropdown)
+const PRESET_IDS = PARAM_IDS.filter((id) => id !== 'encoder' && id !== 'gpuSel');
+let presetCurrent = '';
 
 function presetCollect() {
   const o = {};
@@ -237,7 +248,7 @@ function presetLoadAll() {
 
 function presetStoreAll(list) {
   try { localStorage.setItem(LS_PRESETS_KEY, JSON.stringify(list)); }
-  catch (e) { logError('无法保存预设: ' + e.message); }
+  catch (e) { logError('无法保存预设：' + e.message); }
 }
 
 function refreshPresetList() {
@@ -257,6 +268,11 @@ function refreshPresetList() {
   $('presetDelBtn').disabled = !presetCurrent;
 }
 
+function setPresetMenuOpen(open) {
+  $('presetListMenu').classList.toggle('open', !!open);
+  $('presetListBtn').setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
 function presetRenderMenu(items) {
   const menu = $('presetListMenu');
   menu.innerHTML = '';
@@ -272,10 +288,12 @@ function presetRenderMenu(items) {
     li.className = 'item';
     li.dataset.name = it.n;
     li.textContent = it.n;
+    li.setAttribute('role', 'option');
+    li.setAttribute('aria-selected', it.n === presetCurrent ? 'true' : 'false');
     if (it.n === presetCurrent) li.classList.add('active');
     li.addEventListener('click', () => {
       presetCurrent = it.n;
-      $('presetListMenu').classList.remove('open');
+      setPresetMenuOpen(false);
       refreshPresetList();
     });
     menu.appendChild(li);
@@ -284,16 +302,22 @@ function presetRenderMenu(items) {
 
 $('presetSaveBtn').addEventListener('click', () => {
   const typed = $('presetName').value.trim();
-  const name = typed || presetCurrent;   // empty box + selected preset = update that one
-  if (!name) { logError('保存预设需要先输入名称，或先在列表中选择要覆盖的预设'); return; }
+  const name = typed || presetCurrent;   // 名字留空且已选中某项 = 覆盖那一项
+  if (!name) {
+    logError('保存预设需要先输入名称，或先在列表中选择要覆盖的预设');
+    $('presetName').focus();
+    return;
+  }
   const list = presetLoadAll();
   const params = presetCollect();
   const i = list.findIndex((x) => x.n === name);
-  if (i >= 0) list[i].p = params; else list.push({ n: name, p: params });
+  const existed = i >= 0;
+  if (existed) list[i].p = params; else list.push({ n: name, p: params });
   presetStoreAll(list);
   $('presetName').value = '';
   presetCurrent = name;
   refreshPresetList();
+  if (window.uiOk) window.uiOk(existed ? '已覆盖预设：' + name : '已保存预设：' + name);
 });
 
 $('presetLoadBtn').addEventListener('click', () => {
@@ -301,24 +325,32 @@ $('presetLoadBtn').addEventListener('click', () => {
   if (!it) return;
   for (const id of PRESET_IDS) if (id in it.p) applyParamTo(id, it.p[id]);
   persistParams();
+  // 加载预设也要进撤销栈，否则同一张卡片上的「撤销」对它无效
+  pushHistory();
+  if (window.uiOk) window.uiOk('已加载预设：' + presetCurrent + '（可用 Ctrl+Z 撤销）');
 });
 
-$('presetDelBtn').addEventListener('click', () => {
+$('presetDelBtn').addEventListener('click', async () => {
   const name = presetCurrent;
   if (!name) return;
+  const ok = window.uiConfirm
+    ? await window.uiConfirm('删除预设？', '将删除预设「' + name + '」，此操作无法撤销。', '删除')
+    : window.confirm('确定删除预设「' + name + '」吗？');
+  if (!ok) return;
   presetStoreAll(presetLoadAll().filter((x) => x.n !== name));
-  $('presetName').value = name;   // handy if the user wants to re-create it under the same name
+  $('presetName').value = name;   // 方便用户想用同名重建
   presetCurrent = '';
   refreshPresetList();
+  if (window.uiWarn) window.uiWarn('已删除预设：' + name);
 });
 
 $('presetListBtn').addEventListener('click', (e) => {
   e.stopPropagation();
-  $('presetListMenu').classList.toggle('open');
+  setPresetMenuOpen(!$('presetListMenu').classList.contains('open'));
 });
-// Click anywhere outside the preset picker collapses the open menu.
+// 点击别处收起预设菜单。Esc 关闭菜单由 app-shell.js 的统一键盘入口处理
+// （这里再挂一个 keydown 会和它抢事件，重新制造优先级不明的问题）。
 document.addEventListener('click', (e) => {
-  if (!$('presetListWrap').contains(e.target)) $('presetListMenu').classList.remove('open');
+  if (!$('presetListWrap').contains(e.target)) setPresetMenuOpen(false);
 });
 refreshPresetList();
-

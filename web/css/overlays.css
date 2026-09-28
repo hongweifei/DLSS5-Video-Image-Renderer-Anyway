@@ -1,80 +1,274 @@
-﻿/* ============================================================
-   overlays.css — 固定定位浮层：视频对比放大视图、电源按钮
-   （这些元素脱离文档流，单独成文件便于定位 z-index 冲突）
+/* ============================================================
+   overlays.css — 脱离文档流的浮层与对比视图
+   分区：compare / video-compare / modal / log-sheet /
+         toast / drop-overlay / confirm / exit
+   ------------------------------------------------------------
+   注意：本文件是纯 CSS。历史上这里被从 index.html 机械抽出时，
+   把 HTML 的 <style> / </style> 包裹标签一起带了进来。CSS 解析器
+   会把它们并进后一条规则的选择器，使该规则整条失效（无效选择器
+   → 丢弃整条规则），于是 .vd-zoom / .vcompare / #exitWrap 三条
+   定义被静默丢掉。tools/audit-html.js 现在会检查 CSS 里是否混入
+   HTML 标签，防止再次发生。
    ============================================================ */
-/* 视频对比（vcompare）与放大视图 — 从 index.html 内联 <style> 抽出 */
 
-<style>
-.vd-zoom {
-  position: fixed !important; inset: 20px; z-index: 900;
-  overflow: auto; border-radius: 12px;
-  box-shadow: 0 12px 48px rgba(0,0,0,.55);
+.compare-labels {
+  position: absolute; top: var(--s2); left: 0; right: 0;
+  display: flex; justify-content: space-between;
+  padding: 0 var(--s3); pointer-events: none;
+  font-size: var(--fs-xs); font-family: var(--mono);
 }
-.vd-zoom .vcompare video, .vd-zoom .vcompare .vstage { max-height: calc(100vh - 260px); }
-.vd-zoom .vcompare { display: block; }
-.vd-zoom #vdZoomClose {
-  display: inline-flex !important; align-items: center; justify-content: center;
-  position: fixed !important; top: 24px; right: 24px;
-  color: #fff; background: rgba(0,0,0,.4); border: none;
-  font-size: 13px; font-family: inherit;
-  padding: 6px 14px; border-radius: 4px; cursor: pointer;
-  width: auto; height: auto;
+.compare-labels span {
+  background: rgba(0, 0, 0, .62); color: #fff;
+  padding: 2px var(--s2); border-radius: var(--r-xs);
+  backdrop-filter: blur(2px);
 }
-.vd-zoom #vdZoomClose:hover { background: rgba(0,0,0,.7); }
-</style>
-<style>
+
+/* 分界线：可见的抓取把手（纯 ::after，不需要额外 DOM），
+   键盘聚焦时加粗，让"这里可以拖动"这件事自己说出来。 */
+.split-divider {
+  position: absolute; top: 0; bottom: 0; left: 50%;
+  width: 2px; margin-left: -1px;
+  background: rgba(255, 255, 255, .9);
+  box-shadow: 0 0 8px rgba(0, 0, 0, .55);
+  pointer-events: none;
+}
+.split-divider::after {
+  content: ""; position: absolute; top: 50%; left: 50%;
+  width: 30px; height: 30px; margin: -15px 0 0 -15px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .92);
+  border: 1px solid rgba(0, 0, 0, .35);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .5);
+  /* 左右箭头暗示可拖动方向 */
+  background-image:
+    linear-gradient(90deg, transparent 0 26%, #1a1a1a 26% 38%, transparent 38% 62%, #1a1a1a 62% 74%, transparent 74%);
+}
+.compare-stage:focus-visible .split-divider::after { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---------------------------------------------------------- image compare */
+.compare {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  min-height: 240px; background: var(--media-bg);
+  border-radius: var(--r-md); overflow: hidden;
+  user-select: none; touch-action: none;
+}
+.compare-stage { cursor: ew-resize; touch-action: none; }
+/* 画面盒：尺寸等于缩放后的原图本身（不含黑边），渲染层叠在同一矩形里裁剪，
+   这样分隔线坐标与图像像素 1:1 对应，不产生偏移。 */
+.compare .img-stage { position: relative; max-width: 100%; max-height: 100%; line-height: 0; }
+.compare .img-stage > img.orig { display: block; max-width: 100%; max-height: 68vh; }
+.compare .img-stage .render-layer {
+  position: absolute; inset: 0; pointer-events: none;
+  clip-path: inset(0 0 0 50%);
+}
+.compare .img-stage .render-layer img { display: block; width: 100%; height: 100%; object-fit: fill; background: var(--media-bg); }
+.compare.empty .orig { opacity: .3; }
+.compare.empty .split-divider, .compare.empty .render-layer { display: none; }
+.compare .render-layer img[src=""], .compare .render-layer img:not([src]) { visibility: hidden; }
+#imgBox.empty { display: none; }
+
+/* ---------------------------------------------------------- video compare */
 .vcompare {
-  position: relative; background:#000; border-radius:8px; overflow:hidden;
-  cursor: ew-resize; user-select:none; display:block; width:100%;
+  position: relative; background: var(--media-bg);
+  border-radius: var(--r-md); overflow: hidden;
+  display: block; width: 100%;
+  user-select: none; touch-action: none;
 }
-.vcompare .vstage { position:relative; width:100%; }
-.vcompare video { display:block; width:100%; height:auto; max-height:62vh; background:#000; object-fit:contain; }
-.vcompare .vtop { position:absolute; inset:0; clip-path:inset(0 100% 0 0); pointer-events:none; }
-.vcompare .vtop video { width:100%; height:100%; object-fit:contain; }
-.vcompare .divider { position:absolute; top:0; bottom:0; width:2px; background:rgba(255,255,255,.85);
-  box-shadow:0 0 6px rgba(0,0,0,.4); pointer-events:none; left:50%; }
-.vcompare .compare-labels span:first-child { text-shadow:0 1px 3px #000; }
-.vctrl { display:flex; align-items:center; gap:10px; margin-top:8px; flex-wrap:wrap; }
-.vctrl input[type=range] { flex:1 1 120px; min-width:80px; }
-.vctrl .time { font-size:12px; color:var(--dim); white-space:nowrap; }
-.vctrl {
-  background: rgba(14,14,16,.94); border-radius: 6px; padding: 5px 10px;
-  color: #eee; gap: 8px;
-}
-.vctrl .btn { background: transparent; border: none; color: #eee; padding: 2px 6px; min-width: auto; font-size: 15px; cursor: pointer; }
-.vctrl .btn:hover { background: rgba(255,255,255,.14); }
-.vctrl .btn:disabled { opacity: .35; }
-.vctrl .time { color: #cfcfcf; font-family: var(--mono); font-size: 12px; }
-.vctrl input[type=range] { accent-color: #7ab8ff; }
-.vctrl .sp { flex: 1 1 20px; }
+.vcompare .vstage { position: relative; width: 100%; }
+.vcompare video { display: block; width: 100%; height: auto; max-height: 60vh; background: var(--media-bg); object-fit: contain; }
+.vcompare .vtop { position: absolute; inset: 0; clip-path: inset(0 100% 0 0); pointer-events: none; }
+.vcompare .vtop video { width: 100%; height: 100%; object-fit: contain; }
 .vcompare.empty { min-height: 220px; }
 .vcompare.empty .vstage { min-height: 220px; }
-</style>
 
-/* 电源按钮等固定定位小部件 — 从 index.html 内联 <style> 抽出 */
-
-#exitWrap {
-  position: fixed; top: 84px; right: 18px;
-  z-index: 700;
-  display: flex; justify-content: center;
+/* 播放控制条 */
+.vctrl {
+  display: flex; align-items: center; gap: var(--s2);
+  margin-top: var(--s2); padding: 5px var(--s3);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  flex-wrap: wrap;
 }
+.vctrl .btn {
+  background: transparent; border-color: transparent; color: var(--text);
+  padding: 4px 8px; min-height: 30px;
+}
+.vctrl .btn:hover:not(:disabled) { background: var(--surface-3); border-color: transparent; }
+.vctrl .time { font: var(--fs-sm) var(--mono); color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.vctrl input[type=range] { flex: 1 1 140px; min-width: 90px; accent-color: var(--accent); min-height: 24px; }
+.vctrl .sp { flex: 1 1 20px; }
+.vctrl input[type=range]#vdVol { flex: 0 0 90px; min-width: 90px; }
+
+/* 放大对比：把同一张卡片提升为整屏浮层（不复制 DOM，状态完全共享） */
+.vd-zoom {
+  position: fixed; inset: var(--s5); z-index: var(--z-modal);
+  overflow: auto; padding: var(--s4);
+  background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg); box-shadow: var(--sh-3);
+}
+.vd-zoom .vcompare video { max-height: calc(100dvh - 260px); }
+.vd-zoom #vdZoomClose {
+  display: inline-flex; align-items: center; justify-content: center;
+  position: fixed; top: calc(var(--s5) + var(--s3)); right: calc(var(--s5) + var(--s3));
+  z-index: calc(var(--z-modal) + 1);
+}
+#vdZoomClose { display: none; }
+
+/* ---------------------------------------------------------- image modal */
+.img-modal {
+  position: fixed; inset: 0; z-index: var(--z-modal);
+  display: none; align-items: center; justify-content: center;
+  padding: var(--s6); background: var(--scrim);
+  backdrop-filter: blur(3px);
+}
+.img-modal.show { display: flex; }
+.img-modal-inner { position: relative; width: min(96vw, 1900px); height: 88dvh; }
+.img-modal .compare { width: 100%; height: 100%; min-width: 0; min-height: 0; max-width: none; max-height: none; }
+.img-modal .compare .img-stage { width: 100%; height: 100%; }
+.img-modal .compare .img-stage > img.orig,
+.img-modal .compare .img-stage .render-layer img {
+  width: 100%; height: 100%; object-fit: contain; max-width: none; max-height: none;
+}
+.img-modal-close { position: absolute; top: calc(-1 * (var(--s6) + 4px)); right: 0; }
+.img-modal-hint {
+  position: absolute; bottom: calc(-1 * (var(--s5) + 2px)); left: 0; right: 0;
+  text-align: center; color: rgba(255, 255, 255, .7); font: var(--fs-xs) var(--mono);
+}
+
+/* ---------------------------------------------------------- log sheet */
+/* 折叠态只把标题条露在底栏上方：用 transform 位移而不是 height，
+   整段动画只做合成，不会每帧触发布局。 */
+#logPanel {
+  position: fixed; right: var(--s4); bottom: calc(var(--bar-h) + var(--s3));
+  width: min(580px, calc(100vw - var(--s6)));
+  height: 340px; max-height: calc(100dvh - var(--header-h) - var(--bar-h) - var(--s6));
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md);
+  box-shadow: var(--sh-3); z-index: var(--z-sheet);
+  transform: translateY(calc(100% - 40px));
+  transition: transform var(--dur-3) var(--ease-out);
+}
+#logPanel.expanded { transform: none; }
+#logPanel.folded .log-body { display: none; }
+#logPanel .log-head {
+  display: flex; align-items: center; gap: var(--s2); flex: 0 0 auto;
+  min-height: 40px; padding: var(--s2) var(--s3);
+  cursor: pointer; user-select: none;
+  border-bottom: 1px solid var(--border);
+}
+#logPanel.folded .log-head { border-bottom: 0; }
+#logPanel .log-title { font-weight: 600; font-size: var(--fs-md); }
+#logPanel .log-count {
+  font: 600 var(--fs-xs)/16px var(--mono); color: var(--accent);
+  background: var(--accent-soft); padding: 0 6px; border-radius: var(--r-pill); min-width: 20px; text-align: center;
+}
+#logPanel .log-actions { margin-left: auto; display: flex; gap: var(--s1); }
+#logPanel .log-btn {
+  min-height: 26px; padding: 2px var(--s2);
+  background: transparent; color: var(--text-2);
+  border: 1px solid var(--border); border-radius: var(--r-xs);
+  font-size: var(--fs-sm); cursor: pointer;
+  transition: background var(--dur-2) var(--ease-std), color var(--dur-2) var(--ease-std);
+}
+#logPanel .log-btn:hover { background: var(--surface-3); color: var(--text); }
+#logPanel .log-body {
+  margin: 0; flex: 1 1 auto; overflow: auto;
+  padding: var(--s3); background: var(--surface-inset); color: var(--text-2);
+  font: var(--fs-sm)/1.6 var(--mono); white-space: pre-wrap; word-break: break-all;
+}
+
+/* ---------------------------------------------------------- toasts */
+#toasts {
+  position: fixed; top: calc(var(--header-h) + var(--s3)); right: var(--s4);
+  z-index: var(--z-toast);
+  display: flex; flex-direction: column; gap: var(--s2);
+  width: min(420px, calc(100vw - var(--s6)));
+  pointer-events: none;
+}
+.toast {
+  display: flex; align-items: flex-start; gap: var(--s2);
+  padding: var(--s3);
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm); box-shadow: var(--sh-2);
+  pointer-events: auto;
+  animation: toast-in var(--dur-3) var(--ease-out) both;
+}
+.toast.is-leaving { animation: toast-out var(--dur-2) var(--ease-in) both; }
+.toast.k-error { border-left-color: var(--danger); }
+.toast.k-ok { border-left-color: var(--ok); }
+.toast.k-warn { border-left-color: var(--warn); }
+.toast .t-body { flex: 1; min-width: 0; }
+.toast .t-title { font-size: var(--fs-md); font-weight: 600; }
+.toast .t-msg { font-size: var(--fs-sm); color: var(--text-2); margin-top: 2px; word-break: break-word; }
+.toast .t-close {
+  flex: 0 0 auto; background: transparent; border: 0; color: var(--text-3);
+  cursor: pointer; padding: 0 2px; min-height: 24px; min-width: 24px; font-size: var(--fs-lg); line-height: 1;
+}
+.toast .t-close:hover { color: var(--text); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-8px) } to { opacity: 1; transform: none } }
+@keyframes toast-out { from { opacity: 1 } to { opacity: 0; transform: translateY(-6px) } }
+
+/* ---------------------------------------------------------- drop overlay */
+/* 拖文件到窗口任意位置时给出全屏提示：明确告诉用户"松手会发生什么"，
+   而不是让用户在几个高亮框之间猜。 */
+#dropOverlay {
+  position: fixed; inset: 0; z-index: var(--z-drop);
+  display: none; align-items: center; justify-content: center;
+  background: var(--scrim); backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+#dropOverlay.active { display: flex; }
+.drop-card {
+  display: flex; flex-direction: column; align-items: center; gap: var(--s3);
+  padding: var(--s7) var(--s8); text-align: center;
+  background: var(--surface); border: 1.5px dashed var(--accent);
+  border-radius: var(--r-lg); box-shadow: var(--sh-3);
+  animation: toast-in var(--dur-3) var(--ease-out) both;
+  max-width: min(520px, 90vw);
+}
+.drop-card .dc-icon { color: var(--accent); }
+.drop-card .dc-title { font-size: var(--fs-xl); font-weight: 650; }
+.drop-card .dc-sub { color: var(--text-2); font-size: var(--fs-md); }
+.drop-card .dc-modes { display: flex; flex-direction: column; gap: var(--s1); font-size: var(--fs-sm); color: var(--text-3); }
+
+/* ---------------------------------------------------------- confirm */
+#confirmModal {
+  position: fixed; inset: 0; z-index: var(--z-modal);
+  display: none; align-items: center; justify-content: center;
+  padding: var(--s6); background: var(--scrim);
+}
+#confirmModal.show { display: flex; }
+.confirm-card {
+  width: min(440px, 92vw);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-lg); box-shadow: var(--sh-3);
+  padding: var(--s5);
+  animation: toast-in var(--dur-3) var(--ease-out) both;
+}
+.confirm-card h2 { font-size: var(--fs-lg); font-weight: 650; margin-bottom: var(--s2); }
+.confirm-card p { color: var(--text-2); font-size: var(--fs-md); }
+.confirm-card .row { margin-top: var(--s5); justify-content: flex-end; }
+
+/* ---------------------------------------------------------- exit (电源按钮) */
+/* 收进顶栏：原来是固定在右上角的 56px 红球，会压住内容，
+   而且"清除缓存并退出"这件事靠一个图标传达并不清楚 —— 现在带文字标签。 */
+#exitWrap { display: inline-flex; align-items: center; }
 .exit-power {
-  width: 56px; height: 56px; border-radius: 50%;
-  font-size: 26px; line-height: 1;
+  display: inline-flex; align-items: center; gap: var(--s2);
+  min-height: var(--ctl-h); padding: 5px var(--s3);
+  background: var(--surface-2); color: var(--danger);
+  border: 1px solid var(--danger-border); border-radius: var(--r-sm);
+  font-size: var(--fs-md); font-weight: 550; cursor: pointer;
+  transition: background var(--dur-2) var(--ease-std), box-shadow var(--dur-2) var(--ease-std), transform var(--dur-1) var(--ease-std);
+}
+.exit-power .exit-ico {
+  width: 22px; height: 22px; border-radius: 50%; flex: 0 0 auto;
+  font-size: 12px; line-height: 1;
   color: #fff; background: radial-gradient(circle at 50% 34%, #a9353d, #5f0f15);
-  border: 3px solid #b03a3a;
-  box-shadow: 0 4px 14px rgba(0,0,0,.4);   /* resting: no coloured glow (灯熄灭) */
-  cursor: pointer;
-  transition: transform .15s ease, box-shadow .15s ease;
+  border: 1.5px solid #b03a3a;
   display: inline-flex; align-items: center; justify-content: center;
 }
-.exit-power:hover {
-  transform: scale(1.06);
-  animation: exitBreath 1.5s ease-in-out infinite;   /* breathing glow only while hovering */
-}
-@keyframes exitBreath {
-  0%, 100% { box-shadow: 0 0 12px 2px rgba(255,90,90,.45); }
-  50%      { box-shadow: 0 0 34px 10px rgba(255,90,90,.85); }
-}
-.exit-power:active { transform: scale(.95); }
-.exit-power:disabled { opacity: .45; cursor: default; animation: none; }
+.exit-power:hover { background: var(--danger-soft); box-shadow: 0 0 14px rgba(200, 60, 60, .35); }
+.exit-power:active { transform: scale(.97); }
+.exit-power:disabled { opacity: .45; cursor: default; box-shadow: none; }
