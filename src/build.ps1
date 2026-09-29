@@ -7,7 +7,12 @@
 #   powershell -File src\build.ps1
 #   powershell -File src\build.ps1 -Clean              # wipe build/ first
 #   powershell -File src\build.ps1 -Guard              # also build server_guard.exe
+#   powershell -File src\build.ps1 -GuardOnly          # ONLY server_guard.exe (fast)
 #   powershell -File src\build.ps1 -MsvcVer 14.44.35207 -SdkVer 10.0.26100.0
+#
+# -GuardOnly exists mainly for version bumps: the version number is baked into the guard at
+# compile time (src/guard/version.h, generated from the root VERSION file by
+# tools/sync-version.js), so a release only needs the guard relinked, not the whole engine.
 #
 # Outputs into <repo>/build/. The toolchain is auto-detected via vswhere (any VS2022 edition,
 # incl. Build Tools), so a Visual Studio update does not break the build.
@@ -18,7 +23,8 @@ param(
     [string]$SdkVer,
     [string]$WinKit = "C:\Program Files (x86)\Windows Kits\10",
     [switch]$Clean,
-    [switch]$Guard
+    [switch]$Guard,
+    [switch]$GuardOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,7 +40,15 @@ function Build-Guard {
     if (-not (Test-Path $guardSrc)) { throw "guard source missing: $guardSrc" }
     Write-Host "=== building server_guard ==="
     & cl.exe /nologo /O1 /MT /W3 $guardSrc "/Fo$OutDir\" "/Fe:$(Join-Path $OutDir 'server_guard.exe')"
-    if ($LASTEXITCODE -ne 0) { throw "server_guard build failed with exit code $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) {
+        # The most common failure by far is LNK1104: a running guard console still holds the exe.
+        # NOTE: this file is deliberately ASCII-only. Windows PowerShell 5.1 reads .ps1 as ANSI
+        # unless it has a UTF-8 BOM, so non-ASCII text here would come out as mojibake.
+        Write-Host ""
+        Write-Host "  LNK1104 'cannot open file ... server_guard.exe' means a guard is still" -ForegroundColor Yellow
+        Write-Host "  running and holding the file. Close the DLSS5NR window and retry." -ForegroundColor Yellow
+        throw "server_guard build failed with exit code $LASTEXITCODE"
+    }
     Write-Host "=== BUILD OK -> build\server_guard.exe ==="
 }
 
@@ -105,34 +119,37 @@ Visual Studio 2022 with the C++ toolset was not found.
     $env:INCLUDE = "$msvcRoot\include;$WinKit\Include\$SdkVer\shared;$WinKit\Include\$SdkVer\ucrt;$WinKit\Include\$SdkVer\um;$WinKit\Include\$SdkVer\winrt"
     $env:LIB     = "$msvcRoot\lib\x64;$WinKit\Lib\$SdkVer\um\x64;$WinKit\Lib\$SdkVer\ucrt\x64"
 
-    Write-Host "=== building dlss5nr_engine ==="
+    # Build into <repo>/build so object files and the exe never pollute the source tree.
+    $outDir = Join-Path $repoDir 'build'
+    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    $exe = Join-Path $outDir 'dlss5nr_engine.exe'
+
     Write-Host "  VS      : $VsRoot"
     Write-Host "  MSVC    : $MsvcVer"
     Write-Host "  SDK     : $SdkVer"
 
-    # Glob the translation units so a newly added .cpp builds without editing this script.
-    # server_guard.c is plain C and is built separately (see -Guard below / build.sh).
-    $sources = Get-ChildItem -Path $coreDir -Filter *.cpp -File |
-        Sort-Object Name | Select-Object -ExpandProperty Name
-    if (-not $sources) { throw "no .cpp sources found in $coreDir" }
-    Write-Host "  sources : $($sources -join ' ')"
+    if (-not $GuardOnly) {
+        Write-Host "=== building dlss5nr_engine ==="
 
-    # Build into <repo>/build so object files and the exe never pollute the source tree.
-    $outDir = Join-Path (Split-Path -Parent $coreDir) 'build'
-    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-    $exe = Join-Path $outDir 'dlss5nr_engine.exe'
+        # Glob the translation units so a newly added .cpp builds without editing this script.
+        # server_guard.c is plain C and is built separately (see -Guard / -GuardOnly below).
+        $sources = Get-ChildItem -Path $coreDir -Filter *.cpp -File |
+            Sort-Object Name | Select-Object -ExpandProperty Name
+        if (-not $sources) { throw "no .cpp sources found in $coreDir" }
+        Write-Host "  sources : $($sources -join ' ')"
 
-    # /Fo puts the .obj files in the same build dir; cl.exe is run from the source dir so the
-    # relative source names and quoted includes keep working.
-    & cl.exe /nologo /O2 /MD /EHa /std:c++17 /W3 @sources `
-        "/Fo$outDir\" /Fe:$exe `
-        /link d3d12.lib dxgi.lib d3d11.lib d3dcompiler.lib
-    if ($LASTEXITCODE -ne 0) { throw "cl.exe failed with exit code $LASTEXITCODE" }
+        # /Fo puts the .obj files in the same build dir; cl.exe is run from the source dir so the
+        # relative source names and quoted includes keep working.
+        & cl.exe /nologo /O2 /MD /EHa /std:c++17 /W3 @sources `
+            "/Fo$outDir\" /Fe:$exe `
+            /link d3d12.lib dxgi.lib d3d11.lib d3dcompiler.lib
+        if ($LASTEXITCODE -ne 0) { throw "cl.exe failed with exit code $LASTEXITCODE" }
 
-    if (-not (Test-Path $exe)) { throw "build reported success but $exe is missing" }
-    Write-Host "=== BUILD OK -> build\dlss5nr_engine.exe ($((Get-Item $exe).Length) bytes) ==="
+        if (-not (Test-Path $exe)) { throw "build reported success but $exe is missing" }
+        Write-Host "=== BUILD OK -> build\dlss5nr_engine.exe ($((Get-Item $exe).Length) bytes) ==="
+    }
 
-    if ($Guard) {
+    if ($Guard -or $GuardOnly) {
         Build-Guard $outDir
     }
 }

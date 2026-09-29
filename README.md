@@ -116,13 +116,47 @@ DLSS5NR_vX.Y/
 1. `powershell -File src\build.ps1 -Clean -Guard` 得到干净的引擎与守护程序；
 2. 确认二进制 payload 齐全：`models/`、`models/onnx/`、`runtime/`（含 `webgpu/`）、`tools/`；
 3. `server_guard.exe` 由 `src\build.ps1 -Guard` 一并产出（`/MT` 静态 CRT，无 VC 运行库依赖）；
-   `cl src\guard\server_guard.c /O1 /MT /W3 /nologo /Fe:server_guard.exe` 亦可；
+   改过版本号只想重建守护时用 `-GuardOnly`（快）；先跑 `node tools/sync-version.js`
+   确保 `src/guard/version.h` 是最新的；
 4. **不要**把 `src/`、`build/`、`outputs/`、`.tmp_uploads/`、`.frame_previews/`、`*.log`
    打进包——发行包不需要源码与构建产物；
 5. `web/` 必须**整目录**打包（`index.html` + `css/` + `js/` + `server.js` + `server/`）；
    改动后先跑校验：`node tools/verify-web.js .`、`node tools/verify-static.js .`、
    `node tools/verify-server.js`（漏掉 `server/` 服务会直接启动失败）；
-6. 解压到**含中文或空格的路径**下试运行一次，确认启动与渲染正常。
+6. **`VERSION` 必须一起打包**（仓库根目录）。服务端启动时读它，页面再通过 `/api/info`
+   取回标题与版本徽标；缺了不会崩，但版本号会显示成 `v0.0-unknown` 并在控制台给出提示；
+7. 解压到**含中文或空格的路径**下试运行一次，确认启动与渲染正常。
+
+### 版本号管理
+
+版本号的真源只有一个：仓库根目录的 **`VERSION`** 文件（内容为裸版本号，不带 `v`）。
+
+```bash
+node tools/bump-version.js 2.1-anyway     # 改版本号：写 VERSION → 同步派生位置 → 审计
+node tools/sync-version.js                # 只重新同步派生位置
+node tools/audit-version.js               # 只核对一致性
+```
+
+派生关系：
+
+| 位置 | 怎么拿到版本号 |
+|---|---|
+| `web/server/version.js` | **运行时**读 `VERSION`，服务横幅与 `/api/info` 都用它 |
+| 页面标题 + 页眉徽标 | `app-shell.js` 从 `/api/info` 取回后写入，**HTML 里没有字面量** |
+| `src/guard/version.h` | `sync-version.js` **生成**（守护是编译期常量，所以需要它） |
+| `README.md` | `sync-version.js` **改写**（包名与"当前版本"说明） |
+
+改了版本号之后，`build\server_guard.exe` 需要重新链接才会带上新值：
+
+```powershell
+powershell -File src\build.ps1 -GuardOnly   # 只重建守护，几秒钟
+powershell -File src\build.ps1 -Guard       # 连引擎一起重建
+```
+
+> 为什么要这样做：版本号原先以字面量散落在 6 处，结果**真的漂移过** ——
+> 守护控制台一直打印 `v1.4`，而页面与服务都是 `v1.5`；而守护源码是 UTF-16LE，
+> 普通文本搜索根本找不到它。现在只有 `VERSION` 一处可改，
+> `tools/audit-version.js` 会核对全部派生位置，并确保没有任何地方再写死版本号。
 
 `.gitignore` 已把 `build/`、`models/`、`runtime/`、`tools/`、`outputs/`、`example/` 排除，
 仓库只存源码。
@@ -221,10 +255,15 @@ tools/                      便携 node/ffmpeg/ffprobe + 校验脚本（本目�
   verify-live.js            校验：起服务后页面与全部资源 200、字节与磁盘一致、接口字段齐全
   audit-html.js             校验：重复属性/重复 id、CSS 里混入 HTML 标签、alt/按钮名/表单标签
   audit-theme.js            校验：两套主题令牌一致 + 全部前景/背景组合的 WCAG AA 对比度
+  audit-version.js          校验：所有版本号位置都与 VERSION 一致，且没有别处写死
+  audit-encoding.js         校验：server_guard.c 是 UTF-16LE+BOM、build 脚本保持纯 ASCII
+  sync-version.js           把 VERSION 同步到派生位置（生成 version.h、改写 README）
+  bump-version.js           改版本号：写 VERSION → 同步 → 审计（一条命令）
   server-probe.js           校验：真实 HTTP 打全部路由（`--render` 含真实 ONNX 推理）
   server-queue-test.js      校验：队列端到端（排队/重排/取消让位/多趟/日志协议/导出/批量）
   make-test-media.js        生成上面两个脚本用的 320x240 测试素材
 start_ui.bat                启动脚本（双击运行）
+VERSION                     版本号唯一真源（见「版本号管理」）
 ```
 
 > **前端改完请跑这几条**（都在项目根执行，`tools/` 不入库，克隆后需自行准备）：
@@ -235,15 +274,17 @@ start_ui.bat                启动脚本（双击运行）
 > node tools/audit-html.js            # 重复属性/id、CSS 混入 HTML、可访问性
 > node tools/audit-theme.js           # 主题令牌一致性 + WCAG AA 对比度
 > node tools/audit-css-tokens.js .    # 所有 var(--x) 都有定义
+> node tools/audit-version.js         # 版本号一致性
+> node tools/audit-encoding.js        # 编码不变量（PS 脚本纯 ASCII、守护 UTF-16LE）
 > # 起服务后再跑：
 > node tools/verify-live.js http://127.0.0.1:9788
 > ```
 >
-> `audit-html.js` 与 `audit-theme.js` 这两条不是走过场：它们对应的正是本项目实际踩过的坑
-> —— 同一元素写两个 `class`（第二个被浏览器忽略，`input-compact` / `mt-10` / `btn-xs`
+> `audit-*` 这几条不是走过场：它们对应的正是本项目实际踩过的坑 ——
+> 同一元素写两个 `class`（第二个被浏览器忽略，`input-compact` / `mt-10` / `btn-xs`
 > 全都没生效）、CSS 里混进 `<style>` 标签（导致紧跟其后的整条规则被丢弃，`.vd-zoom`、
-> `.vcompare`、`#exitWrap` 三条定义静默失效）、未定义的自定义属性（5 条分隔线消失）。
-> 这些在浏览器里都不会报错，只能靠机器检查。
+> `.vcompare`、`#exitWrap` 三条定义静默失效）、未定义的自定义属性（5 条分隔线消失）、
+> 版本号散落 6 处后守护日志停在 `v1.4`。这些在浏览器里都不会报错，只能靠机器检查。
 
 > **布局说明**：`src/build.ps1` 把产物写进 `build/`；引擎按**可执行文件所在目录**向上
 > 探测 `models/`、`runtime/`、`tools/`，因此开发者（exe 在 `build/`）与发行包（exe 在根）
@@ -260,17 +301,25 @@ start_ui.bat                启动脚本（双击运行）
 powershell -File src\build.ps1
 powershell -File src\build.ps1 -Clean        # 先清理旧产物
 powershell -File src\build.ps1 -Guard        # 同时编译 server_guard.exe
+powershell -File src\build.ps1 -GuardOnly    # 只编译 server_guard.exe（改版本号后用，很快）
 ```
 
 ```bash
 # 备选：Git-Bash / MSYS2
 cd src && bash build.sh
 GUARD=1 bash build.sh      # 同时编译守护程序
+GUARDONLY=1 bash build.sh  # 只编译守护程序
 
 # 备选：手动指定工具链（自动探测失败时）
 #   PowerShell: -VsRoot / -MsvcVer / -SdkVer
 #   bash:       VSROOT=... MSVCVER=... SDKVER=... bash build.sh
 ```
+
+> `-GuardOnly` / `GUARDONLY=1` 主要是给改版本号用的：版本号是守护程序的**编译期常量**
+> （`src/guard/version.h`，由 `tools/sync-version.js` 从根目录 `VERSION` 生成），
+> 所以发版只需要重新链接守护，不必重建整个引擎。
+> 如果报 `LNK1104: cannot open file ... server_guard.exe`，说明有守护实例还在运行占着文件
+> —— 关掉 DLSS5NR 窗口再试。
 
 脚本会打印实际使用的 VS / MSVC / SDK 版本；产物为 `build/dlss5nr_engine.exe`
 （发行时把它放到包根目录即可，引擎会自动向上探测 `models/`、`runtime/`、`tools/`）。
@@ -285,8 +334,14 @@ VC 运行库；由 `src\build.ps1 -Guard` 自动产出，也可手动：
 cl src\guard\server_guard.c /O1 /MT /W3 /nologo /Fe:server_guard.exe
 ```
 
+> 手动编译前先确保 `src/guard/version.h` 存在（`node tools/sync-version.js` 生成）：
+> 守护日志里的版本号取自它的 `APP_VERSION_W` 宏。
+>
 > `server_guard.c` 含中文字符串，文件为 **UTF-16LE（带 BOM）**。用编辑器改动时请保持该
 > 编码，否则 MSVC 会报 `C2001: newline in constant`。
+> 同理，`src/build.ps1` 等脚本保持**纯 ASCII** —— Windows PowerShell 5.1 在没有 BOM 时
+> 按 ANSI 解码 .ps1，脚本里的中文会变成乱码。
+> 这两条都由 `node tools/audit-encoding.js` 守着。
 
 ## 命令行参数
 

@@ -3,6 +3,7 @@ const fs = require('fs');
 const { ROOT, OUTPUTS_DIR } = require('../paths');
 const { sendJson } = require('../http');
 const state = require('../state');
+const version = require('../version');
 const { exporter } = require('../export');
 const { queueInfo } = require('../jobs');
 
@@ -86,8 +87,15 @@ module.exports = [
     }],
 
     // Lightweight bootstrap endpoint: returns the project root so the page can compose default
-    // output paths (<ROOT>/outputs/nr_<stem>.<ext>) without the user typing them.
+    // output paths (<ROOT>/outputs/nr_<stem>.<ext>) without the user typing them, plus the app
+    // version (read from the root VERSION file) so the page never hardcodes it.
     ['GET', '/api/info', async (req, res) => {
-        return sendJson(res, 200, { ok: true, root: ROOT, outputs: OUTPUTS_DIR });
+        return sendJson(res, 200, {
+            ok: true,
+            root: ROOT,
+            outputs: OUTPUTS_DIR,
+            version: version.raw,
+            versionDisplay: version.display,
+        });
     }],
 ];

@@ -610,6 +610,21 @@
       : `${m}:${String(s).padStart(2, '0')}`;
   }
 
+  // ================================================================ 版本号
+  // 版本号的唯一真源是仓库根的 VERSION 文件，服务端读它并通过 /api/info 提供。
+  // 页面里不写字面量，避免"标题/徽标/启动横幅各写一份然后慢慢不一致"。
+  function loadVersion() {
+    fetch('/api/info').then((r) => r.json()).then((j) => {
+      if (!j || !j.ok || !j.versionDisplay) return;
+      document.title = 'DLSS5NR 视频渲染 ' + j.versionDisplay;
+      const b = $id('appVersion');
+      if (b) {
+        b.textContent = j.versionDisplay;
+        b.hidden = false;
+      }
+    }).catch(() => { /* 取不到就保持无版本号，不影响使用 */ });
+  }
+
   // ================================================================ 顶栏按钮 / 日志
   function initChrome() {
     const themeBtn = $id('themeToggle');
@@ -676,5 +691,6 @@
 
   initTabs();
   initChrome();
+  loadVersion();
   syncLogAria();
 })();

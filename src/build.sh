@@ -10,6 +10,11 @@
 # which breaks on any other machine). Overrides if needed:
 #   MSVCVER=14.44.35207 SDKVER=10.0.26100.0 bash build.sh
 #   VSROOT="C:/Program Files/Microsoft Visual Studio/2022/Community" bash build.sh
+#
+# Switches (environment variables, to match the rest of this script's style):
+#   GUARD=1      also build server_guard.exe
+#   GUARDONLY=1  ONLY build server_guard.exe (fast; used after a version bump, since the
+#                version number is baked into the guard at compile time)
 set -e
 
 # ---------------------------------------------------------------- host flavour
@@ -123,35 +128,45 @@ SRCDIR="$(pwd)"
 OUTDIR="$SRCDIR/../build"
 mkdir -p "$OUTDIR"
 
-echo "=== building dlss5nr_engine ==="
 echo "  VS      : $VSROOT"
 echo "  MSVC    : $MSVCVER"
 echo "  SDK     : $SDKVER"
-
-# Under WSL the linker needs the output paths to land on the Windows side; run from the source
-# directory (which is on /mnt/...) and let cl.exe see the relative source names.
-#
-# Sources are globbed so a newly added translation unit builds without editing this script;
-# guard/server_guard.c is plain C and is built separately (see GUARD=1 below).
-SOURCES=$(ls -1 *.cpp | tr '\n' ' ')
-echo "  sources : $SOURCES"
 echo "  output  : $OUTDIR"
 
 # /Fo + /Fe keep every artifact in build/ so the source tree stays clean.
 WINOUT=$(winpath "$OUTDIR")
 
-# shellcheck disable=SC2086
-cl.exe /nologo /O2 /MD /EHa /std:c++17 /W3 \
-    $SOURCES \
-    "/Fo$WINOUT\\" "/Fe:$WINOUT/dlss5nr_engine.exe" \
-    /link d3d12.lib dxgi.lib d3d11.lib d3dcompiler.lib
+# GUARDONLY=1 skips the engine: only the guard embeds the version number, so a version bump
+# (node tools/bump-version.js <ver>) only needs the guard relinked.
+if [ "$GUARDONLY" != "1" ]; then
+    echo "=== building dlss5nr_engine ==="
 
-echo "=== BUILD OK -> build/dlss5nr_engine.exe ==="
+    # Under WSL the linker needs the output paths to land on the Windows side; run from the source
+    # directory (which is on /mnt/...) and let cl.exe see the relative source names.
+    #
+    # Sources are globbed so a newly added translation unit builds without editing this script;
+    # guard/server_guard.c is plain C and is built separately (see GUARD=1 / GUARDONLY=1 below).
+    SOURCES=$(ls -1 *.cpp | tr '\n' ' ')
+    echo "  sources : $SOURCES"
+
+    # shellcheck disable=SC2086
+    cl.exe /nologo /O2 /MD /EHa /std:c++17 /W3 \
+        $SOURCES \
+        "/Fo$WINOUT\\" "/Fe:$WINOUT/dlss5nr_engine.exe" \
+        /link d3d12.lib dxgi.lib d3d11.lib d3dcompiler.lib
+
+    echo "=== BUILD OK -> build/dlss5nr_engine.exe ==="
+fi
 
 # Optional: the console guard (plain C, static CRT so it needs no VC runtime).
-if [ "$GUARD" = "1" ]; then
+if [ "$GUARD" = "1" ] || [ "$GUARDONLY" = "1" ]; then
     echo "=== building server_guard ==="
     cl.exe /nologo /O1 /MT /W3 guard/server_guard.c \
-        "/Fo$WINOUT\\" "/Fe:$WINOUT/server_guard.exe"
+        "/Fo$WINOUT\\" "/Fe:$WINOUT/server_guard.exe" || {
+        echo "ERROR: server_guard build failed." >&2
+        echo "       LNK1104 means a running server_guard.exe still holds the file;" >&2
+        echo "       close the DLSS5NR window and retry." >&2
+        exit 1
+    }
     echo "=== BUILD OK -> build/server_guard.exe ==="
 fi

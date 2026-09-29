@@ -29,6 +29,8 @@ const state = require('./server/state');
 const { cleanUploadsDir, cleanFrameDir, cleanFrameDirOlder } = require('./server/tempfiles');
 const { openBrowser } = require('./server/dialog');
 const { handler } = require('./server/routes');
+// 版本号来自仓库根目录的 VERSION 文件（唯一真源），页面再从 /api/info 取
+const { display: APP_VERSION, found: HAS_VERSION_FILE } = require('./server/version');
 
 // Bind to localhost only: the download/open endpoints serve arbitrary absolute paths, and a
 // LAN-reachable server must not be able to leak local files.
@@ -93,7 +95,11 @@ function bindServer(attempt) {
 // the browser. Kept separate from bindServer so the retry loop stays readable.
 function onListening(port) {
     const url = 'http://127.0.0.1:' + port + '/';
-    console.log('DLSS5NR 视频渲染服务 v2.0-anyway 已启动 — Web 界面: ' + url);
+    console.log('DLSS5NR 视频渲染服务 ' + APP_VERSION + ' 已启动 — Web 界面: ' + url);
+    // 版本号取自仓库根的 VERSION 文件；缺了就直说，而不是悄悄显示一个假版本号
+    if (!HAS_VERSION_FILE) {
+        console.warn('提示: 未找到 VERSION 文件，版本号显示为 ' + APP_VERSION + '（发行包应包含该文件）');
+    }
     fs.mkdirSync(OUTPUTS_DIR, { recursive: true });
     cleanUploadsDir();   // fallback only: normal shutdown cleanup is done by server_guard.exe
     cleanFrameDir();     // fallback only: normal shutdown cleanup is done by server_guard.exe

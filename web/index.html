@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DLSS5NR 视频渲染 v2.0-anyway</title>
+<!-- 版本号不写在这里：唯一真源是仓库根目录的 VERSION 文件，
+     app-shell.js 启动时从 /api/info 取回并写入页面标题与页眉徽标。
+     （原先标题与徽标各写一份字面量，这就是漂移的起点。） -->
+<title>DLSS5NR 视频渲染</title>
 <!-- 主题必须在首次绘制前定好，否则深色用户会先看到一帧白色。
      放在样式表之前执行是这里唯一合理的做法。 -->
 <script>
@@ -102,7 +105,8 @@
   <div class="brand">
     <h1>DLSS 5 Neural Rendering</h1>
     <span class="sub">by kkski</span>
-    <span class="badge mono" id="appVersion" title="版本">v2.0-anyway</span>
+    <!-- 版本号由 app-shell.js 从 /api/info 填入（见文件顶部说明） -->
+    <span class="badge mono" id="appVersion" title="版本" hidden></span>
   </div>
 
   <!-- 模式切换：一次只呈现一个任务的输入/操作/结果，不再把 4 个模块堆在一屏 -->
