@@ -80,9 +80,23 @@ async function renderStillOnce(inputImg, cfg) {
                 try { fs.unlinkSync(prevOutput); } catch (e) { /* ignore */ }
                 prevOutput = null;
             }
-            await runFfmpeg(['-loop', '1', '-framerate', '30', '-i', safeImg,
-                '-frames:v', '3', '-pix_fmt', 'yuv444p', '-c:v', 'libx264', '-qp', '0',
-                '-preset', 'ultrafast', srcMp4]);
+            // Windows 上刚写完的文件立刻交给另一个进程打开，偶尔会撞上共享冲突，
+            // ffmpeg 把它报成 "No such file or directory"。这一步很便宜（<1s），
+            // 重试几次就能避开；实测单张图片渲染偶发失败即源于此。
+            let loopErr = null;
+            for (let attempt = 1; attempt <= 3; ++attempt) {
+                try {
+                    await runFfmpeg(['-loop', '1', '-framerate', '30', '-i', safeImg,
+                        '-frames:v', '3', '-pix_fmt', 'yuv444p', '-c:v', 'libx264', '-qp', '0',
+                        '-preset', 'ultrafast', srcMp4]);
+                    loopErr = null;
+                    break;
+                } catch (e) {
+                    loopErr = e;
+                    await new Promise((r) => setTimeout(r, 250 * attempt));
+                }
+            }
+            if (loopErr) throw loopErr;
             const exe = findEngine();
             if (!fs.existsSync(exe)) throw new Error('engine not found');
             const imgCfg = Object.assign({}, cfg || {}, {

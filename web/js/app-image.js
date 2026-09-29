@@ -14,6 +14,39 @@ function setBoxSplit(layerEl, dividerEl, p) {
 function setImgSplit(p) { setBoxSplit($('imgRenderLayer'), $('imgDivider'), p); }
 function setModalImgSplit(p) { setBoxSplit($('imgModalRenderLayer'), $('imgModalDivider'), p); }
 
+// 把一次渲染结果放进对比区。「渲染此图」与视频页的「渲染当前帧」共用，
+// 因为 resetImgCompare() 会把对比区藏起来并清掉图片 —— 谁渲染完谁负责把它放回来。
+function showImgCompare(origUrl, renderUrl, renderedAbs, dims) {
+  $('imgPreview').style.display = 'none';
+  $('imgBox').style.display = '';
+  $('imgBox').classList.remove('empty');
+  $('imgBox').classList.remove('load-error');
+  $('imgOrigImg').src = origUrl;
+  $('imgRenderImg').src = renderUrl;
+  imgRenderedAbs = renderedAbs || null;
+  $('imgSaveBtn').disabled = !imgRenderedAbs;
+  $('imgZoomBtn').disabled = !imgRenderedAbs;
+  setImgSplit(0.5);
+  if (dims && dims.width) {
+    $('imgStatus').textContent = `${dims.width}x${dims.height} — 渲染完成，拖动分界线对比`;
+  }
+}
+
+// 图片加载失败必须看得见：否则对比区只剩一片纯黑 + 一个悬浮的分界线把手，
+// 用户无法区分"没渲染"和"图挂了"。
+[['imgOrigImg', '原图'], ['imgRenderImg', '渲染结果']].forEach(([id, label]) => {
+  const el = $(id);
+  el.addEventListener('error', () => {
+    if (!el.getAttribute('src')) return;
+    $('imgBox').classList.add('load-error');
+    $('imgStatus').textContent = label + '加载失败';
+    logError(label + '加载失败：' + el.src);
+  });
+  el.addEventListener('load', () => {
+    $('imgBox').classList.remove('load-error');
+  });
+});
+
 // 指针拖动 + 键盘可调（原来只有 mousemove，且鼠标移开就弹回 50%）
 if (window.uiBindSplit) {
   window.uiBindSplit($('imgStage'), setImgSplit);
@@ -181,16 +214,7 @@ $('imgRenderBtn').addEventListener('click', async () => {
       logError('渲染失败：' + (r.error || '未知原因'));
       return;
     }
-    $('imgPreview').style.display = 'none';
-    $('imgBox').style.display = '';
-    $('imgOrigImg').src = r.orig;
-    $('imgRenderImg').src = r.render;
-    $('imgBox').classList.remove('empty');
-    imgRenderedAbs = r.renderedAbs || null;
-    $('imgSaveBtn').disabled = !imgRenderedAbs;
-    $('imgZoomBtn').disabled = !imgRenderedAbs;
-    status.textContent = `${r.width}x${r.height} — 渲染完成，拖动分界线对比`;
-    setImgSplit(0.5);
+    showImgCompare(r.orig, r.render, r.renderedAbs, r);
     if (window.uiOk) window.uiOk('渲染完成 — 可拖动分界线对比，或点「放大对比」');
   } catch (e) {
     status.textContent = '请求失败';

@@ -146,8 +146,10 @@ $('setCmpFrameBtn').addEventListener('click', async () => {
 
     // 结果落在「图片」模式的对比区，所以直接切过去 —— 不用再靠一句说明文字
     // 让用户自己去找"右侧图片模块"。
+    // 注意：前面调用的 resetImgCompare() 把对比区藏起来并清空了图片，
+    // 必须把结果重新放回去，否则会显示"渲染完成"却看不到任何对比。
     imgPickPath = up.path;
-    imgRenderedAbs = rr.renderedAbs || null;
+    showImgCompare(rr.orig, rr.render, rr.renderedAbs || null, rr);
     $('imgStatus').textContent = `已渲染 ${rr.width}x${rr.height}（播放器 t=${t.toFixed(2)}s）— 拖动分界线对比`;
     if (window.uiShell) window.uiShell.showTab('image');
     if (window.uiOk) window.uiOk('单帧渲染完成，已切到「图片」查看对比');

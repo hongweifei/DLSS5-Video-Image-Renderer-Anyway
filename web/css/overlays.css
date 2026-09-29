@@ -46,17 +46,28 @@
 .compare-stage:focus-visible .split-divider::after { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ---------------------------------------------------------- image compare */
+/* 黑底放在 .img-stage 上（它由图片撑开），外层 .compare 只负责居中。
+   原实现的黑底在外层 + flex + min-height:240px，一张 249px 宽的图在 680px 的
+   卡片里左右各留 ~210px 纯黑，看起来就像"没渲染出来"。 */
 .compare {
-  position: relative; display: flex; align-items: center; justify-content: center;
-  min-height: 240px; background: var(--media-bg);
-  border-radius: var(--r-md); overflow: hidden;
-  user-select: none; touch-action: none;
+  position: relative;
+  text-align: center;   /* 让 inline-block 的 .img-stage 水平居中 */
+  line-height: 0;       /* 消除 inline-block 底部的基线空隙 */
+  user-select: none;
 }
-.compare-stage { cursor: ew-resize; touch-action: none; }
 /* 画面盒：尺寸等于缩放后的原图本身（不含黑边），渲染层叠在同一矩形里裁剪，
    这样分隔线坐标与图像像素 1:1 对应，不产生偏移。 */
-.compare .img-stage { position: relative; max-width: 100%; max-height: 100%; line-height: 0; }
-.compare .img-stage > img.orig { display: block; max-width: 100%; max-height: 68vh; }
+.compare .img-stage {
+  position: relative; display: inline-block;
+  background: var(--media-bg);
+  border-radius: var(--r-md); overflow: hidden;
+  max-width: 100%;
+  cursor: ew-resize; touch-action: none;
+}
+.compare .img-stage > img.orig {
+  display: block; max-width: 100%; max-height: 62vh;
+  width: auto; height: auto;
+}
 .compare .img-stage .render-layer {
   position: absolute; inset: 0; pointer-events: none;
   clip-path: inset(0 0 0 50%);
@@ -66,6 +77,17 @@
 .compare.empty .split-divider, .compare.empty .render-layer { display: none; }
 .compare .render-layer img[src=""], .compare .render-layer img:not([src]) { visibility: hidden; }
 #imgBox.empty { display: none; }
+/* 图片加载失败时给出可见的说明，而不是一片纯黑。
+   盒子是靠图片撑开的，图挂了盒子就缩成 0 —— 所以错误态要给个最小高度。 */
+.compare.load-error { min-height: 140px; }
+.compare.load-error .img-stage { min-width: min(420px, 100%); min-height: 140px; }
+.compare.load-error::after {
+  content: "图片加载失败（文件可能已被清理）";
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--danger); background: var(--media-bg);
+  font: var(--fs-md) var(--font); line-height: var(--lh);
+}
 
 /* ---------------------------------------------------------- video compare */
 .vcompare {
@@ -124,7 +146,7 @@
 .img-modal.show { display: flex; }
 .img-modal-inner { position: relative; width: min(96vw, 1900px); height: 88dvh; }
 .img-modal .compare { width: 100%; height: 100%; min-width: 0; min-height: 0; max-width: none; max-height: none; }
-.img-modal .compare .img-stage { width: 100%; height: 100%; }
+.img-modal .compare .img-stage { width: 100%; height: 100%; max-width: none; max-height: none; }
 .img-modal .compare .img-stage > img.orig,
 .img-modal .compare .img-stage .render-layer img {
   width: 100%; height: 100%; object-fit: contain; max-width: none; max-height: none;
@@ -145,11 +167,12 @@
   display: flex; flex-direction: column; overflow: hidden;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md);
   box-shadow: var(--sh-3); z-index: var(--z-sheet);
-  transform: translateY(calc(100% - 40px));
-  transition: transform var(--dur-3) var(--ease-out);
+  transition: height var(--dur-3) var(--ease-out);
 }
-#logPanel.expanded { transform: none; }
-#logPanel.folded .log-body { display: none; }
+/* 折叠 = 收缩高度到只剩标题条。
+   不能用 translateY：面板是 bottom:72px 锚定，往下平移会有大半落到视口外，
+   可见的就不止标题条，还会盖在底部操作栏的按钮上（面板 z-index 高于操作栏）。 */
+#logPanel.folded { height: 40px; }
 #logPanel .log-head {
   display: flex; align-items: center; gap: var(--s2); flex: 0 0 auto;
   min-height: 40px; padding: var(--s2) var(--s3);
