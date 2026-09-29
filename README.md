@@ -1,6 +1,9 @@
 用 NVIDIA DLSS 5 Neural Renderer（DLSS NR）神经网络对**视频与图片做逐帧画质增强**的本地工具。
 纯本地运算，不上传任何数据；浏览器操作界面，无需安装。
 
+> 当前版本 **v2.0-anyway**。`-anyway` 是这个分支的标记：把原本只在 NVIDIA NGX 上跑的
+> DLSS NR，改造成在 AMD / Intel / 核显 / CPU 上同样能出神经增强结果的版本。
+
 **硬件支持**：管线（解码 → 光流 → 渲染 → 编码）可在**任意 D3D12 显卡**（AMD / Intel /
 NVIDIA）上运行，无独显时自动回退到 WARP 软渲染与 CPU 光流。
 
@@ -48,7 +51,7 @@ libx264/libx265；运动矢量只在 N 卡原生路径下消耗，其他后端�
 
 ### 路线 A：普通用户（免编译，推荐）
 
-1. 打开本仓库 **Releases** 页面，下载最新版 **完整发行包**（如 `DLSS5NR_v1.5.zip`）；
+1. 打开本仓库 **Releases** 页面，下载最新版 **完整发行包**（如 `DLSS5NR_v2.0-anyway.zip`）；
 2. 解压到任意目录（路径含中文也没问题）；
 3. 双击 **（点击启动）Start_DLSS5NR.bat**；
 4. 浏览器自动打开操作界面（默认 http://127.0.0.1:8777；若该端口被占用或被系统保留，
@@ -128,7 +131,7 @@ DLSS5NR_vX.Y/
 
 | 资产 | 内容 | 适用 |
 |---|---|---|
-| 完整发行包 `DLSS5NR_v1.5.zip` | 引擎 + 界面 + NR 模型(fp16/fp8) + ONNX 重建模型 + 运行库 + 便携 node/ffmpeg + 启动脚本 | 所有用户：解压 → 双击启动 → 浏览器操作 |
+| 完整发行包 `DLSS5NR_v2.0-anyway.zip` | 引擎 + 界面 + NR 模型(fp16/fp8) + ONNX 重建模型 + 运行库 + 便携 node/ffmpeg + 启动脚本 | 所有用户：解压 → 双击启动 → 浏览器操作 |
 
 包内 `models/` 放 NR 模型与配套转发器（`nvngx_dlssnr_fp16.dll` / `nvngx_dlssnr_fp8.dll` +
 `nvngx.dll_dlssnr_fp16.dll` / `nvngx.dll_dlssnr_fp8.dll`，**文件名勿改**）；
